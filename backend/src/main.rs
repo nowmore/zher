@@ -8,6 +8,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::StreamExt;
+use local_ip_address::local_ip;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,6 +55,8 @@ struct AppState {
     file_owners: HashMap<String, (String, String)>,
     // transfer_id -> Sender Channel
     transfers: HashMap<String, mpsc::Sender<Result<Bytes, std::io::Error>>>,
+
+    server_url: String,
 }
 
 type SharedState = Arc<RwLock<AppState>>;
@@ -234,9 +237,11 @@ async fn on_connect(socket: SocketRef, Data(auth): Data<Auth>, state: SocketStat
     );
 
     let user_profile: User;
+    let server_url: String;
 
     {
         let mut state_write = state.write().unwrap();
+        server_url = state_write.server_url.clone();
 
         // Check if session exists for this SessionID
         let session_exists = if let Some(session) = state_write.sessions.get_mut(&session_key) {
@@ -317,6 +322,8 @@ async fn on_connect(socket: SocketRef, Data(auth): Data<Auth>, state: SocketStat
             user: User,
             #[serde(rename = "allUsers")]
             all_users: Vec<User>,
+            #[serde(rename = "serverUrl")]
+            server_url: String,
         }
 
         let _ = socket.emit(
@@ -324,6 +331,7 @@ async fn on_connect(socket: SocketRef, Data(auth): Data<Auth>, state: SocketStat
             WelcomeData {
                 user: user_profile.clone(),
                 all_users,
+                server_url: server_url.clone(),
             },
         );
 
@@ -540,7 +548,12 @@ async fn on_connect(socket: SocketRef, Data(auth): Data<Auth>, state: SocketStat
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let state = Arc::new(RwLock::new(AppState::default()));
+    let my_local_ip = local_ip().unwrap_or("127.0.0.1".parse().unwrap());
+    let server_url = format!("http://{}:4836", my_local_ip);
+
+    let mut state_val = AppState::default();
+    state_val.server_url = server_url.clone();
+    let state = Arc::new(RwLock::new(state_val));
 
     let (layer, io) = SocketIo::builder()
         .with_state(state.clone())
@@ -562,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:4836").await?;
-    info!("Server running on http://0.0.0.0:4836");
+    info!("Server running on {}", server_url);
 
     // Ensure ConnectInfo is provided
     axum::serve(

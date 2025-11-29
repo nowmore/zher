@@ -1,6 +1,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue';
 import { io } from 'socket.io-client';
+import QRCode from 'qrcode';
+import JSZip from 'jszip';
 
 const socket = ref(null);
 const currentUser = ref({});
@@ -18,6 +20,8 @@ const editNameInput = ref('');
 const nameInputRef = ref(null);
 
 const copiedMessageId = ref(null);
+const qrCodeUrl = ref('');
+const serverUrl = ref('');
 
 const onlineCount = computed(() => users.value.length);
 const canSend = computed(() => inputText.value.trim() || selectedFile.value);
@@ -53,6 +57,10 @@ onMounted(() => {
     currentUser.value = data.user;
     users.value = data.allUsers;
     editNameInput.value = data.user.name;
+    if (data.serverUrl) {
+      serverUrl.value = data.serverUrl;
+      generateQRCode();
+    }
   });
 
   socket.value.on('user-joined', (user) => {
@@ -140,27 +148,114 @@ const triggerFileSelect = () => {
   fileInput.value.click();
 };
 
-const handleFileChange = (e) => {
-  if (e.target.files.length > 0) {
-    selectedFile.value = e.target.files[0];
-    sendMessage();
-  }
+const getZipName = () => {
+  const date = new Date();
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const HH = String(date.getHours()).padStart(2, '0');
+  const MM = String(date.getMinutes()).padStart(2, '0');
+  const SS = String(date.getSeconds()).padStart(2, '0');
+  return `${yyyy}${mm}${dd}${HH}${MM}${SS}.zip`;
 };
 
-const handleDrop = (e) => {
-  isDragging.value = false;
-  const files = e.dataTransfer.files;
-  if (files.length > 0) {
+const handleFileChange = async (e) => {
+  const files = Array.from(e.target.files);
+  if (files.length === 0) return;
+
+  if (files.length === 1) {
     selectedFile.value = files[0];
     sendMessage();
+  } else {
+    const zip = new JSZip();
+    files.forEach(f => zip.file(f.name, f));
+    const content = await zip.generateAsync({ type: "blob" });
+    selectedFile.value = new File([content], getZipName(), { type: "application/zip" });
+    sendMessage();
+  }
+  // Reset input
+  e.target.value = '';
+};
+
+const traverseFileTree = async (item, zipFolder) => {
+  if (item.isFile) {
+    const file = await new Promise(resolve => item.file(resolve));
+    zipFolder.file(item.name, file);
+  } else if (item.isDirectory) {
+    const dirReader = item.createReader();
+    const entries = await new Promise(resolve => {
+      const result = [];
+      const read = () => {
+        dirReader.readEntries(batch => {
+          if (batch.length > 0) {
+            result.push(...batch);
+            read();
+          } else {
+            resolve(result);
+          }
+        });
+      };
+      read();
+    });
+    const newZipFolder = zipFolder.folder(item.name);
+    for (const entry of entries) {
+      await traverseFileTree(entry, newZipFolder);
+    }
   }
 };
 
-const handlePaste = (e) => {
+const handleDrop = async (e) => {
+  isDragging.value = false;
+  const items = Array.from(e.dataTransfer.items);
+
+  if (items.length === 0) return;
+
+  // Check if it's a single file (not directory)
+  const firstEntry = items[0].webkitGetAsEntry ? items[0].webkitGetAsEntry() : null;
+  if (items.length === 1 && firstEntry && firstEntry.isFile) {
+    firstEntry.file(file => {
+      selectedFile.value = file;
+      sendMessage();
+    });
+    return;
+  }
+
+  // Multiple files or directories
+  const zip = new JSZip();
+  const promises = items.map(item => {
+    const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+    if (entry) {
+      return traverseFileTree(entry, zip);
+    }
+    // Fallback for non-entry items (unlikely for files)
+    const file = item.getAsFile();
+    if (file) {
+      zip.file(file.name, file);
+    }
+    return Promise.resolve();
+  });
+
+  await Promise.all(promises);
+  const content = await zip.generateAsync({ type: "blob" });
+  selectedFile.value = new File([content], getZipName(), { type: "application/zip" });
+  sendMessage();
+};
+
+const handlePaste = async (e) => {
   if (e.clipboardData && e.clipboardData.files.length > 0) {
     e.preventDefault();
-    selectedFile.value = e.clipboardData.files[0];
-    sendMessage();
+    const files = Array.from(e.clipboardData.files);
+
+    if (files.length === 1) {
+      selectedFile.value = files[0];
+      sendMessage();
+    } else {
+      const zip = new JSZip();
+      files.forEach(f => zip.file(f.name, f));
+      const content = await zip.generateAsync({ type: "blob" });
+      selectedFile.value = new File([content], getZipName(), { type: "application/zip" });
+      sendMessage();
+    }
   }
 };
 
@@ -244,6 +339,16 @@ const downloadFile = (fileId, fileName) => {
   link.click();
   document.body.removeChild(link);
 };
+
+const generateQRCode = async () => {
+  if (serverUrl.value) {
+    try {
+      qrCodeUrl.value = await QRCode.toDataURL(serverUrl.value, { margin: 2, width: 200 });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+};
 </script>
 
 <template>
@@ -308,6 +413,14 @@ const downloadFile = (fileId, fileName) => {
                   </svg>
                 </button>
               </div>
+            </div>
+          </div>
+
+          <div v-if="serverUrl" class="pt-4 flex flex-col items-center gap-3 pb-4">
+            <img v-if="qrCodeUrl" :src="qrCodeUrl" class="w-32 h-32 rounded-lg shadow-sm p-1 border border-gray-100"
+              alt="Server QR Code" />
+            <div class="text-center w-full">
+              <p class="text-xs text-gray-400 mt-1">扫码打开👆</p>
             </div>
           </div>
         </div>
@@ -428,7 +541,7 @@ const downloadFile = (fileId, fileName) => {
                   d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
               </svg>
             </button>
-            <input type="file" ref="fileInput" @change="handleFileChange" class="hidden">
+            <input type="file" ref="fileInput" @change="handleFileChange" class="hidden" multiple>
           </div>
 
           <button @click="sendMessage" :disabled="!canSend"
@@ -493,6 +606,14 @@ const downloadFile = (fileId, fileName) => {
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div v-if="serverUrl" class="p-4 border-t border-gray-200 bg-gray-50 flex flex-col items-center gap-3 shrink-0">
+        <img v-if="qrCodeUrl" :src="qrCodeUrl" class="w-32 h-32 rounded-lg shadow-sm bg-white p-1"
+          alt="Server QR Code" />
+        <div class="text-center w-full px-2">
+          <p class="text-xs text-gray-400 mt-1">扫码打开👆</p>
         </div>
       </div>
     </div>

@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 12px);
+}
+
+.device-icon {
+  stroke-width: 3px;
+  paint-order: stroke fill;
+}

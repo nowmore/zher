@@ -196,6 +196,17 @@ const copyText = async (text, msgId) => {
   }
 };
 
+const parseMessage = (text) => {
+  if (!text) return [];
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  return text.split(urlRegex).map(part => {
+    if (part.match(urlRegex)) {
+      return { type: 'link', content: part, url: part };
+    }
+    return { type: 'text', content: part };
+  });
+};
+
 const sendMessage = () => {
   if (selectedFile.value) {
     const file = selectedFile.value;
@@ -342,7 +353,15 @@ const downloadFile = (fileId, fileName) => {
               :class="msg.senderId === currentUser.id ? 'bg-blue-500 text-white rounded-tr-none' : 'bg-white text-gray-800 rounded-tl-none'">
 
               <div v-if="msg.text" class="flex gap-3 items-end min-w-[60px]">
-                <div class="whitespace-pre-wrap leading-relaxed flex-1">{{ msg.text }}</div>
+                <div class="whitespace-pre-wrap leading-relaxed flex-1 break-all min-w-0">
+                  <template v-for="(part, index) in parseMessage(msg.text)" :key="index">
+                    <a v-if="part.type === 'link'" :href="part.url" target="_blank" rel="noopener noreferrer"
+                      class="underline hover:opacity-80"
+                      :class="msg.senderId === currentUser.id ? 'text-white' : 'text-blue-600'" @click.stop>{{
+                        part.content }}</a>
+                    <span v-else>{{ part.content }}</span>
+                  </template>
+                </div>
                 <button @click="copyText(msg.text, msg.id)"
                   class="shrink-0 opacity-60 hover:opacity-100 transition-opacity text-current" title="复制">
                   <svg v-if="copiedMessageId === msg.id" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none"

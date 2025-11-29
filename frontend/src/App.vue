@@ -25,10 +25,10 @@ const canSend = computed(() => inputText.value.trim() || selectedFile.value);
 const sharedFiles = new Map(); // fileId -> File
 
 const getSessionId = () => {
-  let id = sessionStorage.getItem('zher_uid');
+  let id = localStorage.getItem('zher_uid');
   if (!id) {
     id = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    sessionStorage.setItem('zher_uid', id);
+    localStorage.setItem('zher_uid', id);
   }
   return id;
 };
@@ -66,9 +66,13 @@ onMounted(() => {
   });
 
   socket.value.on('update-user-list', (allUsers) => {
-    users.value = allUsers;
-    const me = allUsers.find(u => u.id === currentUser.value.id);
-    if (me) currentUser.value = me;
+    if (Array.isArray(allUsers)) {
+      users.value = allUsers;
+      const me = allUsers.find(u => u.id === currentUser.value.id);
+      if (me) currentUser.value = me;
+    } else {
+      console.error('Received invalid user list:', allUsers);
+    }
   });
 
   socket.value.on('name-change-success', (newName) => {
@@ -266,7 +270,7 @@ const downloadFile = (fileId, fileName) => {
             <div class="relative shrink-0">
               <div class="w-10 h-10 rounded-full flex items-center justify-center shadow-sm"
                 :style="{ backgroundColor: user.color }">
-                <span class="text-white text-sm font-bold -translate-y-0.5">{{ user.name.substring(0, 1) }}</span>
+                <span class="text-white text-sm font-bold leading-none">{{ user.name.substring(0, 1) }}</span>
               </div>
               <div class="absolute -bottom-1 -right-1 z-10">
                 <svg v-if="user.device === 'mobile'" xmlns="http://www.w3.org/2000/svg"
@@ -429,8 +433,8 @@ const downloadFile = (fileId, fileName) => {
 
           <button @click="sendMessage" :disabled="!canSend"
             class="p-3 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed transition-all active:scale-95 shrink-0">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 translate-x-0.5" viewBox="0 0 20 20"
-              fill="currentColor">
+            <!-- <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 translate-x-0.5" viewBox="0 0 20 20" -->
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
               <path
                 d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
             </svg>

@@ -26,7 +26,84 @@ const serverUrl = ref('');
 const onlineCount = computed(() => users.value.length);
 const canSend = computed(() => inputText.value.trim() || selectedFile.value);
 
+const allMessages = ref([]);
+const isDarkMode = ref(localStorage.getItem('zher_dark_mode') === 'true');
+const PAGE_SIZE = 20;
+const windowWidth = ref(window.innerWidth);
+
+if (isDarkMode.value) document.documentElement.classList.add('dark');
+
 const sharedFiles = new Map(); // fileId -> File
+
+const toggleDarkMode = () => {
+  console.log("darkmode ? ", isDarkMode.value);
+  isDarkMode.value = !isDarkMode.value;
+  if (isDarkMode.value) document.documentElement.classList.add('dark');
+  else document.documentElement.classList.remove('dark');
+  localStorage.setItem('zher_dark_mode', isDarkMode.value);
+};
+
+const saveChatHistory = () => {
+  const now = Date.now();
+  const tenMinutesAgo = now - 10 * 60 * 1000;
+
+  // Filter expired
+  allMessages.value = allMessages.value.filter(m => m.id > tenMinutesAgo);
+
+  try {
+    localStorage.setItem('zher_chat_history', JSON.stringify(allMessages.value));
+  } catch (e) {
+    // If full, remove oldest 2 minutes from the window
+    const twoMinutesMore = tenMinutesAgo + 2 * 60 * 1000;
+    allMessages.value = allMessages.value.filter(m => m.id > twoMinutesMore);
+    try {
+      localStorage.setItem('zher_chat_history', JSON.stringify(allMessages.value));
+    } catch (e2) {
+      console.error("Storage full", e2);
+    }
+  }
+};
+
+const loadChatHistory = () => {
+  const stored = localStorage.getItem('zher_chat_history');
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      const now = Date.now();
+      const tenMinutesAgo = now - 10 * 60 * 1000;
+      allMessages.value = parsed.filter(m => m.id > tenMinutesAgo);
+      messages.value = allMessages.value.slice(-PAGE_SIZE);
+    } catch (e) { }
+  }
+};
+
+const loadMoreMessages = () => {
+  if (messages.value.length >= allMessages.value.length) return;
+
+  const currentCount = messages.value.length;
+  const remaining = allMessages.value.length - currentCount;
+  const toLoad = Math.min(remaining, PAGE_SIZE);
+  const startIndex = allMessages.value.length - currentCount - toLoad;
+  const newBatch = allMessages.value.slice(startIndex, startIndex + toLoad);
+
+  if (chatContainer.value) {
+    const oldHeight = chatContainer.value.scrollHeight;
+    const oldScrollTop = chatContainer.value.scrollTop;
+
+    messages.value = [...newBatch, ...messages.value];
+
+    nextTick(() => {
+      const newHeight = chatContainer.value.scrollHeight;
+      chatContainer.value.scrollTop = newHeight - oldHeight + oldScrollTop; // Usually just diff is enough if at top (oldScrollTop~0)
+    });
+  }
+};
+
+const handleScroll = (e) => {
+  if (e.target.scrollTop <= 10) { // Threshold
+    loadMoreMessages();
+  }
+};
 
 const getSessionId = () => {
   let id = localStorage.getItem('zher_uid');
@@ -46,6 +123,12 @@ const formatFileSize = (bytes) => {
 };
 
 onMounted(() => {
+  loadChatHistory();
+
+  window.addEventListener('resize', () => {
+    windowWidth.value = window.innerWidth;
+  });
+
   socket.value = io({
     auth: {
       sessionId: getSessionId()
@@ -61,6 +144,9 @@ onMounted(() => {
       serverUrl.value = data.serverUrl;
       generateQRCode();
     }
+    nextTick(() => {
+      if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+    });
   });
 
   socket.value.on('user-joined', (user) => {
@@ -96,7 +182,9 @@ onMounted(() => {
   });
 
   socket.value.on('message', (msg) => {
+    allMessages.value.push(msg);
     messages.value.push(msg);
+    saveChatHistory();
     nextTick(() => {
       if (chatContainer.value) {
         chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
@@ -123,6 +211,9 @@ onUnmounted(() => {
   if (socket.value) {
     socket.value.disconnect();
   }
+  window.removeEventListener('resize', () => {
+    windowWidth.value = window.innerWidth;
+  });
 });
 
 const startEditName = () => {
@@ -222,6 +313,13 @@ const handleDrop = async (e) => {
 
   // Multiple files or directories
   const zip = new JSZip();
+  let zipName = getZipName();
+
+  // Use folder name if single directory
+  if (items.length === 1 && firstEntry && firstEntry.isDirectory) {
+    zipName = firstEntry.name + ".zip";
+  }
+
   const promises = items.map(item => {
     const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
     if (entry) {
@@ -237,25 +335,59 @@ const handleDrop = async (e) => {
 
   await Promise.all(promises);
   const content = await zip.generateAsync({ type: "blob" });
-  selectedFile.value = new File([content], getZipName(), { type: "application/zip" });
+  selectedFile.value = new File([content], zipName, { type: "application/zip" });
   sendMessage();
 };
 
 const handlePaste = async (e) => {
-  if (e.clipboardData && e.clipboardData.files.length > 0) {
-    e.preventDefault();
-    const files = Array.from(e.clipboardData.files);
+  const items = e.clipboardData && e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
+  const fileItems = items.filter(item => item.kind === 'file');
 
-    if (files.length === 1) {
-      selectedFile.value = files[0];
-      sendMessage();
-    } else {
-      const zip = new JSZip();
-      files.forEach(f => zip.file(f.name, f));
-      const content = await zip.generateAsync({ type: "blob" });
-      selectedFile.value = new File([content], getZipName(), { type: "application/zip" });
-      sendMessage();
+  if (fileItems.length > 0) {
+    e.preventDefault();
+
+    // Check if it's a single file (and not a folder structure that needs zipping)
+    // Note: Paste event items might not always support webkitGetAsEntry correctly in all browsers for folders
+    // But for Chrome/Edge it handles directory structure via getAsEntry
+    const firstEntry = fileItems[0].webkitGetAsEntry ? fileItems[0].webkitGetAsEntry() : null;
+
+    if (fileItems.length === 1 && firstEntry && firstEntry.isFile) {
+      firstEntry.file(file => {
+        selectedFile.value = file;
+        sendMessage();
+      });
+      return;
     }
+
+    // Multiple files or directories -> Zip
+    const zip = new JSZip();
+    let zipName = getZipName();
+
+    // Use folder name if single directory
+    if (fileItems.length === 1 && firstEntry && firstEntry.isDirectory) {
+      zipName = firstEntry.name + ".zip";
+    }
+
+    const promises = fileItems.map(item => {
+      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+      if (entry) {
+        return traverseFileTree(entry, zip);
+      }
+      const file = item.getAsFile();
+      if (file) {
+        zip.file(file.name, file);
+      }
+      return Promise.resolve();
+    });
+
+    await Promise.all(promises);
+
+    // Check if zip is empty
+    if (Object.keys(zip.files).length === 0) return;
+
+    const content = await zip.generateAsync({ type: "blob" });
+    selectedFile.value = new File([content], zipName, { type: "application/zip" });
+    sendMessage();
   }
 };
 
@@ -349,21 +481,34 @@ const generateQRCode = async () => {
     }
   }
 };
+
+const placeholderText = computed(() => {
+  if (isDragging.value) {
+    return '松开鼠标以发送文件...';
+  }
+  if (windowWidth.value < 768) {
+    return '发送消息...';
+  }
+
+  return '发送消息//粘贴/拖拽文件或文件夹到此处';
+});
 </script>
 
 <template>
-  <div class="flex h-[100dvh] bg-gray-100 font-sans overflow-hidden relative">
+  <div
+    class="flex h-[100dvh] bg-gray-100 dark:bg-gray-900 font-sans overflow-hidden relative text-gray-800 dark:text-gray-100">
 
     <div v-if="showMobileUsers"
       class="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 md:hidden"
       @click.self="showMobileUsers = false">
       <div
-        class="bg-white rounded-2xl w-full max-w-sm max-h-[90%] flex flex-col shadow-2xl overflow-hidden animate-fade-in">
-        <div class="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-          <h3 class="font-bold text-gray-800">在线用户列表</h3>
-          <button @click="showMobileUsers = false" class="p-1 rounded-full hover:bg-gray-200">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-500" fill="none" viewBox="0 0 24 24"
-              stroke="currentColor">
+        class="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-sm max-h-[90%] flex flex-col shadow-2xl overflow-hidden animate-fade-in">
+        <div
+          class="p-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800">
+          <h3 class="font-bold text-gray-800 dark:text-white">在线用户列表</h3>
+          <button @click="showMobileUsers = false" class="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-gray-500 dark:text-gray-400" fill="none"
+              viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
@@ -371,7 +516,7 @@ const generateQRCode = async () => {
 
         <div class="flex-1 overflow-y-auto p-4 space-y-3">
           <div v-for="user in users" :key="user.id"
-            class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 transition">
+            class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition">
             <div class="relative shrink-0">
               <div class="w-10 h-10 rounded-full flex items-center justify-center shadow-sm"
                 :style="{ backgroundColor: user.color }">
@@ -397,16 +542,16 @@ const generateQRCode = async () => {
             <div class="flex flex-col flex-1 min-w-0">
               <div v-if="user.id === currentUser.id && isEditingName" class="flex items-center">
                 <input v-model="editNameInput" @blur="saveName" @keyup.enter="$event.target.blur()" type="text"
-                  class="name-edit-input w-full px-2 py-1 text-sm border border-blue-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  class="name-edit-input w-full px-2 py-1 text-sm border border-blue-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-200 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                   placeholder="输入新昵称">
               </div>
               <div v-else class="flex items-center justify-between w-full">
                 <div class="flex flex-col min-w-0">
-                  <span class="font-medium text-gray-700 truncate">{{ user.name }}</span>
+                  <span class="font-medium text-gray-700 dark:text-gray-200 truncate">{{ user.name }}</span>
                   <span class="text-xs text-gray-400" v-if="user.id === currentUser.id">我</span>
                 </div>
                 <button v-if="user.id === currentUser.id" @click="startEditName"
-                  class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition">
+                  class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-gray-700 rounded-full transition">
                   <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                     <path
                       d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
@@ -428,17 +573,34 @@ const generateQRCode = async () => {
     </div>
 
     <div class="flex-1 flex flex-col min-w-0 h-full">
-      <header class="bg-white shadow-sm px-4 py-3 flex justify-between items-center z-10 shrink-0">
-        <h1 class="text-lg font-bold text-gray-800">这儿 <span class="text-sm font-normal text-gray-400 ml-2">zhe'r</span>
+      <header
+        class="bg-white dark:bg-gray-800 shadow-sm px-4 py-3 flex justify-between items-center z-10 shrink-0 transition-colors">
+        <h1 class="text-lg font-bold text-gray-800 dark:text-white">这儿 <span
+            class="text-sm font-normal text-gray-400 ml-2">zhe'r</span>
         </h1>
-        <button @click="showMobileUsers = true"
-          class="md:hidden px-3 py-1.5 bg-gray-100 rounded-full text-sm text-blue-600 font-medium active:bg-gray-200 transition-colors flex items-center gap-1">
-          <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-          在线: {{ onlineCount }}
-        </button>
+        <div class="flex items-center gap-3">
+          <button @click="toggleDarkMode"
+            class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors">
+            <svg v-if="isDarkMode" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+              stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+              stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          </button>
+          <button @click="showMobileUsers = true"
+            class="md:hidden px-3 py-1.5 bg-gray-100 dark:bg-gray-700 rounded-full text-sm text-blue-600 dark:text-blue-400 font-medium active:bg-gray-200 dark:active:bg-gray-600 transition-colors flex items-center gap-1">
+            <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+            在线: {{ onlineCount }}
+          </button>
+        </div>
       </header>
 
-      <div ref="chatContainer" class="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
+      <div ref="chatContainer" @scroll="handleScroll" class="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
         <div v-for="msg in messages" :key="msg.id" class="flex items-start gap-2 max-w-full"
           :class="{ 'flex-row-reverse': msg.senderId === currentUser.id }">
 
@@ -466,15 +628,16 @@ const generateQRCode = async () => {
 
           <div class="flex flex-col max-w-[75%]" :class="{ 'items-end': msg.senderId === currentUser.id }">
             <span class="text-[10px] text-gray-400 mb-1 px-1">{{ msg.senderName }}</span>
-            <div class="px-4 py-2.5 rounded-2xl shadow-sm text-sm break-words w-full"
-              :class="msg.senderId === currentUser.id ? 'bg-blue-500 text-white rounded-tr-none' : 'bg-white text-gray-800 rounded-tl-none'">
+            <div class="px-4 py-2.5 rounded-2xl shadow-sm text-sm break-words w-full transition-colors"
+              :class="msg.senderId === currentUser.id ? 'bg-blue-500 text-white rounded-tr-none' : 'bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-tl-none'">
 
               <div v-if="msg.text" class="flex gap-3 items-end min-w-[60px]">
                 <div class="whitespace-pre-wrap leading-relaxed flex-1 break-all min-w-0">
                   <template v-for="(part, index) in parseMessage(msg.text)" :key="index">
                     <a v-if="part.type === 'link'" :href="part.url" target="_blank" rel="noopener noreferrer"
                       class="underline hover:opacity-80"
-                      :class="msg.senderId === currentUser.id ? 'text-white' : 'text-blue-600'" @click.stop>{{
+                      :class="msg.senderId === currentUser.id ? 'text-white' : 'text-blue-600 dark:text-blue-400'"
+                      @click.stop>{{
                         part.content }}</a>
                     <span v-else>{{ part.content }}</span>
                   </template>
@@ -494,9 +657,10 @@ const generateQRCode = async () => {
               </div>
 
               <div v-else-if="msg.type === 'file-meta'"
-                class="mt-1 p-2 bg-white rounded-xl border border-gray-200 flex items-center justify-between gap-3 min-w-[200px] shadow-sm text-gray-800">
+                class="mt-1 p-2 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3 min-w-[200px] shadow-sm text-gray-800 dark:text-gray-100">
                 <div class="flex items-center gap-3 min-w-0 overflow-hidden">
-                  <div class="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center text-gray-500 shrink-0">
+                  <div
+                    class="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center text-gray-500 dark:text-gray-400 shrink-0">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24"
                       stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -524,17 +688,18 @@ const generateQRCode = async () => {
         </div>
       </div>
 
-      <div class="p-3 bg-white border-t border-gray-200 shrink-0 pb-safe">
+      <div
+        class="p-3 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shrink-0 pb-safe transition-colors">
         <div class="flex gap-2 items-end">
           <div
-            class="relative flex-1 bg-gray-100 rounded-2xl focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-500/20 transition-all border focus-within:border-blue-500"
-            :class="isDragging ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-500/20 border-dashed' : 'border-transparent'"
+            class="relative flex-1 bg-gray-100 dark:bg-gray-700 rounded-2xl focus-within:bg-white dark:focus-within:bg-gray-600 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all border focus-within:border-blue-500 dark:focus-within:border-blue-500"
+            :class="isDragging ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500/20 border-dashed' : 'border-transparent'"
             @drop.prevent="handleDrop" @dragover.prevent="isDragging = true" @dragleave.prevent="isDragging = false">
             <input v-model="inputText" @keyup.enter="sendMessage" @paste="handlePaste" type="text"
-              :placeholder="isDragging ? '松开鼠标上传文件' : '发送消息...'"
-              class="w-full pl-4 pr-10 py-3 bg-transparent border-none focus:ring-0 outline-none text-sm">
+              :placeholder="placeholderText"
+              class="w-full pl-4 pr-10 py-3 bg-transparent border-none focus:ring-0 outline-none text-sm dark:text-white dark:placeholder-gray-400">
             <button @click="triggerFileSelect"
-              class="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-blue-600 transition-colors rounded-full hover:bg-gray-100">
+              class="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-blue-600 transition-colors rounded-full hover:bg-gray-100 dark:hover:bg-gray-600">
               <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
                 stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -556,14 +721,15 @@ const generateQRCode = async () => {
       </div>
     </div>
 
-    <div class="hidden md:flex w-80 bg-white border-l border-gray-200 flex-col shrink-0">
-      <div class="p-6 border-b border-gray-100">
-        <h2 class="text-lg font-bold text-gray-800">在线用户 ({{ onlineCount }})</h2>
+    <div
+      class="hidden md:flex w-80 bg-white dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 flex-col shrink-0 transition-colors">
+      <div class="p-6 border-b border-gray-100 dark:border-gray-700">
+        <h2 class="text-lg font-bold text-gray-800 dark:text-white">在线用户 ({{ onlineCount }})</h2>
       </div>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-3">
         <div v-for="user in users" :key="user.id"
-          class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 transition">
+          class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition">
           <div class="relative shrink-0">
             <div class="w-10 h-10 rounded-full flex items-center justify-center shadow-sm"
               :style="{ backgroundColor: user.color }">
@@ -589,16 +755,16 @@ const generateQRCode = async () => {
           <div class="flex flex-col flex-1 min-w-0">
             <div v-if="user.id === currentUser.id && isEditingName" class="flex items-center">
               <input v-model="editNameInput" @blur="saveName" @keyup.enter="$event.target.blur()" type="text"
-                class="name-edit-input w-full px-2 py-1 text-sm border border-blue-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-200"
+                class="name-edit-input w-full px-2 py-1 text-sm border border-blue-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-200 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                 placeholder="输入新昵称">
             </div>
             <div v-else class="flex items-center justify-between w-full">
               <div class="flex flex-col min-w-0">
-                <span class="font-medium text-gray-700 truncate">{{ user.name }}</span>
+                <span class="font-medium text-gray-700 dark:text-gray-200 truncate">{{ user.name }}</span>
                 <span class="text-xs text-gray-400" v-if="user.id === currentUser.id">我</span>
               </div>
               <button v-if="user.id === currentUser.id" @click="startEditName"
-                class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition">
+                class="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-gray-700 rounded-full transition">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                   <path
                     d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
@@ -609,7 +775,8 @@ const generateQRCode = async () => {
         </div>
       </div>
 
-      <div v-if="serverUrl" class="p-4 border-t border-gray-200 bg-gray-50 flex flex-col items-center gap-3 shrink-0">
+      <div v-if="serverUrl"
+        class="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 flex flex-col items-center gap-3 shrink-0">
         <img v-if="qrCodeUrl" :src="qrCodeUrl" class="w-32 h-32 rounded-lg shadow-sm bg-white p-1"
           alt="Server QR Code" />
         <div class="text-center w-full px-2">

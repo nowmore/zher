@@ -1,232 +1,133 @@
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue';
-import { io } from 'socket.io-client';
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import QRCode from 'qrcode';
-import JSZip from 'jszip';
+import { useSocket } from './composables/useSocket';
+import { useChat } from './composables/useChat';
+import { useFileTransfer } from './composables/useFileTransfer';
+import { formatFileSize } from './utils/fileUtils';
+import { parseMessage, copyText as copyToClipboard } from './utils/textUtils';
 
-const socket = ref(null);
-const currentUser = ref({});
-const users = ref([]);
-const messages = ref([]);
+// UI State
+const showMobileUsers = ref(false);
+const editNameInput = ref('');
+const copiedMessageId = ref(null);
 const inputText = ref('');
 const fileInput = ref(null);
-const selectedFile = ref(null);
 const chatContainer = ref(null);
-const showMobileUsers = ref(false);
-const isDragging = ref(false);
-
-const isEditingName = ref(false);
-const editNameInput = ref('');
-const nameInputRef = ref(null);
-
-const copiedMessageId = ref(null);
-const qrCodeUrl = ref('');
-const serverUrl = ref('');
-const isMultiLine = ref(false);
-const isZipping = ref(false);
-const zipProgress = ref(0);
-const currentZipName = ref('');
-const currentZipFile = ref('');
-
-const onlineCount = computed(() => users.value.length);
-const canSend = computed(() => inputText.value.trim() || selectedFile.value);
-
-const allMessages = ref([]);
-const isDarkMode = ref(localStorage.getItem('zher_dark_mode') === 'true');
-const PAGE_SIZE = 20;
 const windowWidth = ref(window.innerWidth);
+const isMultiLine = ref(false);
+const isDragging = ref(false);
+const qrCodeUrl = ref('');
 
+// Theme
+const isDarkMode = ref(localStorage.getItem('zher_dark_mode') === 'true');
 if (isDarkMode.value) document.documentElement.classList.add('dark');
-
-const sharedFiles = new Map(); // fileId -> File
-
 const toggleDarkMode = () => {
-  console.log("darkmode ? ", isDarkMode.value);
   isDarkMode.value = !isDarkMode.value;
   if (isDarkMode.value) document.documentElement.classList.add('dark');
   else document.documentElement.classList.remove('dark');
   localStorage.setItem('zher_dark_mode', isDarkMode.value);
 };
 
-const saveChatHistory = () => {
-  const now = Date.now();
-  const tenMinutesAgo = now - 10 * 60 * 1000;
+// Composables
+const {
+  users, currentUser, serverUrl, isEditingName,
+  connect, disconnect, emit, requestNameChange
+} = useSocket();
 
-  // Filter expired
-  allMessages.value = allMessages.value.filter(m => m.id > tenMinutesAgo);
+const { messages, loadMoreMessages, addMessage, loadChatHistory } = useChat();
 
-  try {
-    localStorage.setItem('zher_chat_history', JSON.stringify(allMessages.value));
-  } catch (e) {
-    // If full, remove oldest 2 minutes from the window
-    const twoMinutesMore = tenMinutesAgo + 2 * 60 * 1000;
-    allMessages.value = allMessages.value.filter(m => m.id > twoMinutesMore);
+// Send Message Logic
+const resetInput = () => {
+  inputText.value = '';
+  selectedFile.value = null;
+  if (fileInput.value) fileInput.value.value = '';
+  const textarea = document.querySelector('textarea');
+  if (textarea) textarea.style.height = 'auto';
+  isMultiLine.value = false;
+};
+
+const realSendMessage = () => {
+  if (selectedFile.value) {
+    const file = selectedFile.value;
+    const fileId = Math.random().toString(36).substr(2, 9);
+    addSharedFile(fileId, file);
+
+    emit('file-meta', {
+      fileId,
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type
+    });
+    resetInput();
+  } else if (inputText.value.trim()) {
+    emit('text-message', inputText.value);
+    resetInput();
+  }
+};
+
+const sendMessage = realSendMessage;
+
+const {
+  selectedFile, isZipping, zipProgress, currentZipName, currentZipFile,
+  handleFileChange, handleDrop, handlePaste, downloadFile,
+  handleStartUpload, addSharedFile
+} = useFileTransfer(sendMessage);
+
+const canSend = computed(() => inputText.value.trim() || selectedFile.value);
+const onlineCount = computed(() => users.value.length);
+
+const sortedUsers = computed(() => {
+  const me = users.value.find(u => u.id === currentUser.value.id);
+  const others = users.value.filter(u => u.id !== currentUser.value.id);
+  return me ? [me, ...others] : others;
+});
+
+// QR Code
+const generateQRCode = async () => {
+  if (serverUrl.value) {
     try {
-      localStorage.setItem('zher_chat_history', JSON.stringify(allMessages.value));
-    } catch (e2) {
-      console.error("Storage full", e2);
+      qrCodeUrl.value = await QRCode.toDataURL(serverUrl.value, { margin: 2, width: 200 });
+    } catch (err) {
+      console.error(err);
     }
   }
 };
+watch(serverUrl, generateQRCode);
 
-const loadChatHistory = () => {
-  const stored = localStorage.getItem('zher_chat_history');
-  if (stored) {
-    try {
-      const parsed = JSON.parse(stored);
-      const now = Date.now();
-      const tenMinutesAgo = now - 10 * 60 * 1000;
-      allMessages.value = parsed.filter(m => m.id > tenMinutesAgo);
-      messages.value = allMessages.value.slice(-PAGE_SIZE);
-    } catch (e) { }
-  }
-};
-
-const loadMoreMessages = () => {
-  if (messages.value.length >= allMessages.value.length) return;
-
-  const currentCount = messages.value.length;
-  const remaining = allMessages.value.length - currentCount;
-  const toLoad = Math.min(remaining, PAGE_SIZE);
-  const startIndex = allMessages.value.length - currentCount - toLoad;
-  const newBatch = allMessages.value.slice(startIndex, startIndex + toLoad);
-
-  if (chatContainer.value) {
-    const oldHeight = chatContainer.value.scrollHeight;
-    const oldScrollTop = chatContainer.value.scrollTop;
-
-    messages.value = [...newBatch, ...messages.value];
-
-    nextTick(() => {
-      const newHeight = chatContainer.value.scrollHeight;
-      chatContainer.value.scrollTop = newHeight - oldHeight + oldScrollTop; // Usually just diff is enough if at top (oldScrollTop~0)
-    });
-  }
-};
-
-const handleScroll = (e) => {
-  if (e.target.scrollTop <= 10) { // Threshold
-    loadMoreMessages();
-  }
-};
-
-const getSessionId = () => {
-  let id = localStorage.getItem('zher_uid');
-  if (!id) {
-    id = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    localStorage.setItem('zher_uid', id);
-  }
-  return id;
-};
-
-const formatFileSize = (bytes) => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
+// Lifecycle
 onMounted(() => {
   loadChatHistory();
+
+  connect({
+    onMessage: (msg) => {
+      addMessage(msg);
+      nextTick(() => {
+        if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+      });
+    },
+    onWelcome: (data) => {
+      editNameInput.value = data.user.name;
+      nextTick(() => {
+        if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+      });
+    },
+    onStartUpload: handleStartUpload
+  });
 
   window.addEventListener('resize', () => {
     windowWidth.value = window.innerWidth;
   });
-
-  socket.value = io({
-    auth: {
-      sessionId: getSessionId()
-    },
-    transports: ['websocket']
-  });
-
-  socket.value.on('welcome', (data) => {
-    currentUser.value = data.user;
-    users.value = data.allUsers;
-    editNameInput.value = data.user.name;
-    if (data.serverUrl) {
-      serverUrl.value = data.serverUrl;
-      generateQRCode();
-    }
-    nextTick(() => {
-      if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
-    });
-  });
-
-  socket.value.on('user-joined', (user) => {
-    if (!users.value.some(u => u.id === user.id)) {
-      users.value.push(user);
-    }
-  });
-
-  socket.value.on('user-left', (id) => {
-    users.value = users.value.filter(u => u.id !== id);
-  });
-
-  socket.value.on('update-user-list', (allUsers) => {
-    if (Array.isArray(allUsers)) {
-      users.value = allUsers;
-      const me = allUsers.find(u => u.id === currentUser.value.id);
-      if (me) currentUser.value = me;
-    } else {
-      console.error('Received invalid user list:', allUsers);
-    }
-  });
-
-  socket.value.on('name-change-success', (newName) => {
-    currentUser.value.name = newName;
-    isEditingName.value = false;
-  });
-
-  socket.value.on('name-change-fail', (msg) => {
-    alert(msg);
-    nextTick(() => {
-      if (nameInputRef.value) nameInputRef.value.focus();
-    });
-  });
-
-  socket.value.on('message', (msg) => {
-    allMessages.value.push(msg);
-    messages.value.push(msg);
-    saveChatHistory();
-    nextTick(() => {
-      if (chatContainer.value) {
-        chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
-      }
-    });
-  });
-
-  socket.value.on('start-upload', async ({ fileId, transferId, offset = 0, end }) => {
-    const file = sharedFiles.get(fileId);
-    if (file) {
-      try {
-        let body = file;
-        if (offset > 0 || (typeof end === 'number' && end < file.size - 1)) {
-          const sliceEnd = (typeof end === 'number') ? end + 1 : file.size;
-          body = file.slice(offset, sliceEnd);
-        }
-
-        await fetch(`/api/upload/${transferId}`, {
-          method: 'POST',
-          body: body, // Browser handles streaming
-        });
-      } catch (err) {
-        console.error("Upload failed", err);
-      }
-    }
-  });
 });
 
 onUnmounted(() => {
-  if (socket.value) {
-    socket.value.disconnect();
-  }
+  disconnect();
   window.removeEventListener('resize', () => {
     windowWidth.value = window.innerWidth;
   });
 });
 
+// UI Actions
 const startEditName = () => {
   editNameInput.value = currentUser.value.name;
   isEditingName.value = true;
@@ -243,240 +144,19 @@ const saveName = () => {
     editNameInput.value = currentUser.value.name;
     return;
   }
-  socket.value.emit('request-name-change', newName);
+  requestNameChange(newName);
 };
 
 const triggerFileSelect = () => {
   fileInput.value.click();
 };
 
-const getZipName = () => {
-  const date = new Date();
-  const yyyy = date.getFullYear();
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
-  const HH = String(date.getHours()).padStart(2, '0');
-  const MM = String(date.getMinutes()).padStart(2, '0');
-  const SS = String(date.getSeconds()).padStart(2, '0');
-  return `${yyyy}${mm}${dd}${HH}${MM}${SS}.zip`;
-};
-
-const traverseFileTree = async (item, zipFolder) => {
-  if (item.isFile) {
-    const file = await new Promise(resolve => item.file(resolve));
-    zipFolder.file(item.name, file);
-  } else if (item.isDirectory) {
-    const dirReader = item.createReader();
-    const entries = await new Promise(resolve => {
-      const result = [];
-      const read = () => {
-        dirReader.readEntries(batch => {
-          if (batch.length > 0) {
-            result.push(...batch);
-            read();
-          } else {
-            resolve(result);
-          }
-        });
-      };
-      read();
-    });
-    const newZipFolder = zipFolder.folder(item.name);
-    for (const entry of entries) {
-      await traverseFileTree(entry, newZipFolder);
-    }
-  }
-};
-
-const processAndSendFiles = async (items, isEntries) => {
-  if (items.length === 0) return;
-
-  // Check for single file
-  if (items.length === 1) {
-    if (isEntries) {
-      if (items[0].isFile) {
-        items[0].file(file => {
-          selectedFile.value = file;
-          sendMessage();
-        });
-        return;
-      }
-    } else {
-      // If file object
-      if (!items[0].webkitRelativePath) { // If it has path, it might be part of folder structure intent? But 1 file is 1 file.
-        selectedFile.value = items[0];
-        sendMessage();
-        return;
-      }
-    }
-  }
-
-  const zip = new JSZip();
-  let zipName = getZipName();
-
-  // Naming Logic
-  if (isEntries) {
-    if (items.length === 1 && items[0].isDirectory) {
-      zipName = items[0].name + ".zip";
-    }
-  } else {
-    // Files
-    if (items[0].webkitRelativePath) {
-      const parts = items[0].webkitRelativePath.split('/');
-      if (parts.length > 1) {
-        zipName = parts[parts.length - 2] + ".zip";
-      }
-    }
-  }
-
-  const promises = items.map(item => {
-    if (isEntries) {
-      if (item.isDirectory) return traverseFileTree(item, zip);
-      // File entry
-      return new Promise(resolve => item.file(f => { zip.file(item.name, f); resolve(); }));
-    } else {
-      const path = item.webkitRelativePath || item.name;
-      zip.file(path, item);
-      return Promise.resolve();
-    }
-  });
-
-  await Promise.all(promises);
-
-  if (Object.keys(zip.files).length === 0) return;
-
-  isZipping.value = true;
-  zipProgress.value = 0;
-  currentZipName.value = zipName;
-
-  try {
-    const content = await zip.generateAsync({ type: "blob", compression: "STORE" }, (metadata) => {
-      zipProgress.value = metadata.percent;
-      currentZipFile.value = metadata.currentFile || '';
-    });
-    selectedFile.value = new File([content], zipName, { type: "application/zip" });
-    sendMessage();
-  } catch (err) {
-    console.error("Zip failed", err);
-  } finally {
-    isZipping.value = false;
-  }
-};
-
-const handleFileChange = async (e) => {
-  const files = Array.from(e.target.files);
-  await processAndSendFiles(files, false);
-  e.target.value = '';
-};
-
-const handleDrop = async (e) => {
-  isDragging.value = false;
-  const items = Array.from(e.dataTransfer.items).map(i => i.webkitGetAsEntry()).filter(i => i);
-  await processAndSendFiles(items, true);
-};
-
-const handlePaste = async (e) => {
-  const items = e.clipboardData && e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
-  // For paste, we prefer entries to handle folders
-  const entries = items.filter(i => i.kind === 'file').map(i => i.webkitGetAsEntry()).filter(i => i);
-  if (entries.length > 0) {
-    e.preventDefault();
-    await processAndSendFiles(entries, true);
-  }
-};
-
-const copyText = async (text, msgId) => {
-  let success = false;
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      success = true;
-    } else {
-      throw new Error('Secure context required');
-    }
-  } catch (err) {
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    textArea.style.position = "fixed";
-    textArea.style.left = "-9999px";
-    textArea.style.top = "0";
-    document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-    try {
-      success = document.execCommand('copy');
-    } catch (e) { }
-    document.body.removeChild(textArea);
-  }
-
-  if (success) {
-    copiedMessageId.value = msgId;
-    setTimeout(() => {
-      if (copiedMessageId.value === msgId) {
-        copiedMessageId.value = null;
-      }
-    }, 2000);
-  } else {
-    alert('复制失败，请手动长按文本复制');
-  }
-};
-
-const parseMessage = (text) => {
-  if (!text) return [];
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
-  return text.split(urlRegex).map(part => {
-    if (part.match(urlRegex)) {
-      return { type: 'link', content: part, url: part };
-    }
-    return { type: 'text', content: part };
-  });
-};
-
-const sendMessage = () => {
-  if (selectedFile.value) {
-    const file = selectedFile.value;
-    const fileId = Math.random().toString(36).substr(2, 9);
-    sharedFiles.set(fileId, file);
-
-    socket.value.emit('file-meta', {
-      fileId,
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type
-    });
-    resetInput();
-  } else if (inputText.value.trim()) {
-    socket.value.emit('text-message', inputText.value);
-    resetInput();
-  }
-};
-
-const resetInput = () => {
-  inputText.value = '';
-  selectedFile.value = null;
-  if (fileInput.value) fileInput.value.value = '';
-  const textarea = document.querySelector('textarea');
-  if (textarea) textarea.style.height = 'auto';
-  isMultiLine.value = false;
-};
-
-const downloadFile = (fileId, fileName) => {
-  const link = document.createElement('a');
-  link.href = `/api/download/${fileId}`;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-};
-
-const generateQRCode = async () => {
-  if (serverUrl.value) {
-    try {
-      qrCodeUrl.value = await QRCode.toDataURL(serverUrl.value, { margin: 2, width: 200 });
-    } catch (err) {
-      console.error(err);
-    }
-  }
+const autoResize = (e) => {
+  const target = e.target;
+  target.style.height = 'auto';
+  const newHeight = Math.min(target.scrollHeight, 120);
+  target.style.height = newHeight + 'px';
+  isMultiLine.value = newHeight > 50;
 };
 
 const placeholderText = computed(() => {
@@ -486,15 +166,26 @@ const placeholderText = computed(() => {
   if (windowWidth.value < 768) {
     return '发送消息...';
   }
-
   return '发送消息//粘贴/拖拽文件或文件夹到此处';
 });
-const autoResize = (e) => {
-  const target = e.target;
-  target.style.height = 'auto';
-  const newHeight = Math.min(target.scrollHeight, 120);
-  target.style.height = newHeight + 'px';
-  isMultiLine.value = newHeight > 50;
+
+const handleScroll = (e) => {
+  if (e.target.scrollTop <= 10) {
+    loadMoreMessages(e.target);
+  }
+};
+
+const copyText = (text, msgId) => {
+  copyToClipboard(text, () => {
+    copiedMessageId.value = msgId;
+    setTimeout(() => {
+      if (copiedMessageId.value === msgId) {
+        copiedMessageId.value = null;
+      }
+    }, 2000);
+  }, () => {
+    alert('复制失败，请手动长按文本复制');
+  });
 };
 </script>
 
@@ -543,7 +234,7 @@ const autoResize = (e) => {
         </div>
 
         <div class="flex-1 overflow-y-auto p-4 space-y-3">
-          <div v-for="user in users" :key="user.id"
+          <div v-for="user in sortedUsers" :key="user.id"
             class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition">
             <div class="relative shrink-0">
               <div class="w-10 h-10 rounded-full flex items-center justify-center shadow-sm"
@@ -740,7 +431,6 @@ const autoResize = (e) => {
 
           <button @click="sendMessage" :disabled="!canSend"
             class="p-3 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed transition-all active:scale-95 shrink-0">
-            <!-- <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 translate-x-0.5" viewBox="0 0 20 20" -->
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
               <path
                 d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
@@ -757,7 +447,7 @@ const autoResize = (e) => {
       </div>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-3">
-        <div v-for="user in users" :key="user.id"
+        <div v-for="user in sortedUsers" :key="user.id"
           class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition">
           <div class="relative shrink-0">
             <div class="w-10 h-10 rounded-full flex items-center justify-center shadow-sm"

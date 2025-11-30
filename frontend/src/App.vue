@@ -22,6 +22,9 @@ const nameInputRef = ref(null);
 const copiedMessageId = ref(null);
 const qrCodeUrl = ref('');
 const serverUrl = ref('');
+const isMultiLine = ref(false);
+const isZipping = ref(false);
+const zipProgress = ref(0);
 
 const onlineCount = computed(() => users.value.length);
 const canSend = computed(() => inputText.value.trim() || selectedFile.value);
@@ -192,13 +195,19 @@ onMounted(() => {
     });
   });
 
-  socket.value.on('start-upload', async ({ fileId, transferId }) => {
+  socket.value.on('start-upload', async ({ fileId, transferId, offset = 0, end }) => {
     const file = sharedFiles.get(fileId);
     if (file) {
       try {
+        let body = file;
+        if (offset > 0 || (typeof end === 'number' && end < file.size - 1)) {
+          const sliceEnd = (typeof end === 'number') ? end + 1 : file.size;
+          body = file.slice(offset, sliceEnd);
+        }
+
         await fetch(`/api/upload/${transferId}`, {
           method: 'POST',
-          body: file, // Browser handles streaming
+          body: body, // Browser handles streaming
         });
       } catch (err) {
         console.error("Upload failed", err);
@@ -260,7 +269,12 @@ const handleFileChange = async (e) => {
   } else {
     const zip = new JSZip();
     files.forEach(f => zip.file(f.name, f));
-    const content = await zip.generateAsync({ type: "blob" });
+    isZipping.value = true;
+    zipProgress.value = 0;
+    const content = await zip.generateAsync({ type: "blob" }, (metadata) => {
+      zipProgress.value = metadata.percent;
+    });
+    isZipping.value = false;
     selectedFile.value = new File([content], getZipName(), { type: "application/zip" });
     sendMessage();
   }
@@ -334,7 +348,12 @@ const handleDrop = async (e) => {
   });
 
   await Promise.all(promises);
-  const content = await zip.generateAsync({ type: "blob" });
+  isZipping.value = true;
+  zipProgress.value = 0;
+  const content = await zip.generateAsync({ type: "blob" }, (metadata) => {
+    zipProgress.value = metadata.percent;
+  });
+  isZipping.value = false;
   selectedFile.value = new File([content], zipName, { type: "application/zip" });
   sendMessage();
 };
@@ -385,7 +404,12 @@ const handlePaste = async (e) => {
     // Check if zip is empty
     if (Object.keys(zip.files).length === 0) return;
 
-    const content = await zip.generateAsync({ type: "blob" });
+    isZipping.value = true;
+    zipProgress.value = 0;
+    const content = await zip.generateAsync({ type: "blob" }, (metadata) => {
+      zipProgress.value = metadata.percent;
+    });
+    isZipping.value = false;
     selectedFile.value = new File([content], zipName, { type: "application/zip" });
     sendMessage();
   }
@@ -461,6 +485,9 @@ const resetInput = () => {
   inputText.value = '';
   selectedFile.value = null;
   if (fileInput.value) fileInput.value.value = '';
+  const textarea = document.querySelector('textarea');
+  if (textarea) textarea.style.height = 'auto';
+  isMultiLine.value = false;
 };
 
 const downloadFile = (fileId, fileName) => {
@@ -492,11 +519,31 @@ const placeholderText = computed(() => {
 
   return '发送消息//粘贴/拖拽文件或文件夹到此处';
 });
+const autoResize = (e) => {
+  const target = e.target;
+  target.style.height = 'auto';
+  const newHeight = Math.min(target.scrollHeight, 120);
+  target.style.height = newHeight + 'px';
+  isMultiLine.value = newHeight > 50;
+};
 </script>
 
 <template>
   <div
     class="flex h-[100dvh] bg-gray-100 dark:bg-gray-900 font-sans overflow-hidden relative text-gray-800 dark:text-gray-100">
+
+    <div v-if="isZipping" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div
+        class="bg-white dark:bg-gray-800 rounded-2xl p-6 w-64 shadow-xl flex flex-col items-center gap-4 animate-fade-in">
+        <div
+          class="w-12 h-12 rounded-full border-4 border-blue-100 dark:border-blue-900 border-t-blue-500 animate-spin">
+        </div>
+        <div class="text-center">
+          <h3 class="font-bold text-gray-800 dark:text-white">正在压缩...</h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">{{ zipProgress.toFixed(0) }}%</p>
+        </div>
+      </div>
+    </div>
 
     <div v-if="showMobileUsers"
       class="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 md:hidden"
@@ -695,10 +742,11 @@ const placeholderText = computed(() => {
             class="relative flex-1 bg-gray-100 dark:bg-gray-700 rounded-2xl focus-within:bg-white dark:focus-within:bg-gray-600 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all border focus-within:border-blue-500 dark:focus-within:border-blue-500"
             :class="isDragging ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500/20 border-dashed' : 'border-transparent'"
             @drop.prevent="handleDrop" @dragover.prevent="isDragging = true" @dragleave.prevent="isDragging = false">
-            <input v-model="inputText" @keyup.enter="sendMessage" @paste="handlePaste" type="text"
-              :placeholder="placeholderText"
-              class="w-full pl-4 pr-10 py-3 bg-transparent border-none focus:ring-0 outline-none text-sm dark:text-white dark:placeholder-gray-400">
-            <button @click="triggerFileSelect"
+            <textarea v-model="inputText" rows="1" @input="autoResize" @keyup.enter="sendMessage" @paste="handlePaste"
+              type="text" :placeholder="placeholderText"
+              class="w-full pl-4 pr-20 py-3 bg-transparent border-none focus:ring-0 outline-none text-sm text-gray-800 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 resize-none block max-h-[120px] overflow-y-auto"
+              style="min-height: 44px;"></textarea>
+            <button @click="triggerFileSelect" v-if="!isMultiLine"
               class="absolute right-1 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-blue-600 transition-colors rounded-full hover:bg-gray-100 dark:hover:bg-gray-600">
               <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
                 stroke="currentColor">

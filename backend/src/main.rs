@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{header, StatusCode, Uri},
+    http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -51,8 +51,8 @@ struct AppState {
     // Map SocketID -> SessionID
     socket_to_session: HashMap<String, String>,
 
-    // file_id -> (sender_socket_id, filename)
-    file_owners: HashMap<String, (String, String)>,
+    // file_id -> (sender_socket_id, filename, filesize)
+    file_owners: HashMap<String, (String, String, u64)>,
     // transfer_id -> Sender Channel
     transfers: HashMap<String, mpsc::Sender<Result<Bytes, std::io::Error>>>,
 
@@ -142,6 +142,7 @@ async fn upload_file(
 // GET /download/:file_id
 async fn download_file(
     Path(file_id): Path<String>,
+    headers: HeaderMap,
     State(state): State<SharedState>,
     axum::Extension(io): axum::Extension<SocketIo>,
 ) -> Response {
@@ -153,11 +154,47 @@ async fn download_file(
         state_read.file_owners.get(&file_id).cloned()
     };
 
-    if let Some((sender_id, filename)) = file_info {
+    if let Some((sender_id, filename, filesize)) = file_info {
         {
             let mut state_write = state.write().unwrap();
             state_write.transfers.insert(transfer_id.clone(), tx);
         }
+
+        // Parse Range Header
+        let mut start_byte = 0;
+        let mut end_byte = filesize - 1;
+        let mut is_partial = false;
+
+        if let Some(range_header) = headers.get(header::RANGE) {
+            if let Ok(range_str) = range_header.to_str() {
+                if range_str.starts_with("bytes=") {
+                    let ranges: Vec<&str> =
+                        range_str.trim_start_matches("bytes=").split('-').collect();
+                    if ranges.len() >= 1 {
+                        if let Ok(s) = ranges[0].parse::<u64>() {
+                            start_byte = s;
+                            is_partial = true;
+                        }
+                    }
+                    if ranges.len() >= 2 && !ranges[1].is_empty() {
+                        if let Ok(e) = ranges[1].parse::<u64>() {
+                            end_byte = e;
+                            is_partial = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ensure bounds
+        if start_byte > end_byte || start_byte >= filesize {
+            return (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid Range").into_response();
+        }
+        if end_byte >= filesize {
+            end_byte = filesize - 1;
+        }
+
+        let content_length = end_byte - start_byte + 1;
 
         #[derive(Serialize)]
         struct StartUploadData {
@@ -165,6 +202,8 @@ async fn download_file(
             file_id: String,
             #[serde(rename = "transferId")]
             transfer_id: String,
+            offset: u64,
+            end: u64,
         }
 
         if let Err(e) = io.to(sender_id).emit(
@@ -172,6 +211,8 @@ async fn download_file(
             StartUploadData {
                 file_id,
                 transfer_id,
+                offset: start_byte,
+                end: end_byte,
             },
         ) {
             warn!("Failed to emit start-upload: {}", e);
@@ -182,14 +223,36 @@ async fn download_file(
         let encoded_filename = urlencoding::encode(&filename);
         let content_disposition = format!("attachment; filename*=UTF-8''{}", encoded_filename);
 
-        (
-            [
-                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                (header::CONTENT_DISPOSITION, content_disposition),
-            ],
-            Body::from_stream(stream),
-        )
-            .into_response()
+        let status = if is_partial {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        };
+        let content_range = format!("bytes {}-{}/{}", start_byte, end_byte, filesize);
+
+        let mut response = Body::from_stream(stream).into_response();
+        *response.status_mut() = status;
+
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/octet-stream".parse().unwrap(),
+        );
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            content_disposition.parse().unwrap(),
+        );
+        headers.insert(
+            header::CONTENT_LENGTH,
+            content_length.to_string().parse().unwrap(),
+        );
+        headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+
+        if is_partial {
+            headers.insert(header::CONTENT_RANGE, content_range.parse().unwrap());
+        }
+
+        response
     } else {
         StatusCode::NOT_FOUND.into_response()
     }
@@ -473,6 +536,8 @@ async fn on_connect(socket: SocketRef, Data(auth): Data<Auth>, state: SocketStat
                             .unwrap_or("unknown_file")
                             .to_string();
 
+                        let file_size = obj.get("fileSize").and_then(|v| v.as_u64()).unwrap_or(0);
+
                         obj.insert("fileId".to_string(), Value::String(file_id.clone()));
 
                         use std::time::{SystemTime, UNIX_EPOCH};
@@ -499,7 +564,7 @@ async fn on_connect(socket: SocketRef, Data(auth): Data<Auth>, state: SocketStat
 
                         state_write
                             .file_owners
-                            .insert(file_id, (socket.id.to_string(), file_name));
+                            .insert(file_id, (socket.id.to_string(), file_name, file_size));
                         // Keep socket ID for file transfer routing
                     }
                     let _ = socket.broadcast().emit("message", &meta);

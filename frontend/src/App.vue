@@ -261,35 +261,6 @@ const getZipName = () => {
   return `${yyyy}${mm}${dd}${HH}${MM}${SS}.zip`;
 };
 
-const handleFileChange = async (e) => {
-  const files = Array.from(e.target.files);
-  if (files.length === 0) return;
-
-  if (files.length === 1) {
-    selectedFile.value = files[0];
-    sendMessage();
-  } else {
-    const zip = new JSZip();
-    files.forEach(f => zip.file(f.name, f));
-
-    isZipping.value = true;
-    zipProgress.value = 0;
-    const zipName = getZipName();
-    currentZipName.value = zipName;
-
-    const content = await zip.generateAsync({ type: "blob", compression: "STORE" }, (metadata) => {
-      zipProgress.value = metadata.percent;
-      currentZipFile.value = metadata.currentFile || '';
-    });
-
-    isZipping.value = false;
-    selectedFile.value = new File([content], zipName, { type: "application/zip" });
-    sendMessage();
-  }
-  // Reset input
-  e.target.value = '';
-};
-
 const traverseFileTree = async (item, zipFolder) => {
   if (item.isFile) {
     const file = await new Promise(resolve => item.file(resolve));
@@ -317,118 +288,100 @@ const traverseFileTree = async (item, zipFolder) => {
   }
 };
 
-const handleDrop = async (e) => {
-  isDragging.value = false;
-  const items = Array.from(e.dataTransfer.items);
-
+const processAndSendFiles = async (items, isEntries) => {
   if (items.length === 0) return;
 
-  // Check if it's a single file (not directory)
-  const firstEntry = items[0].webkitGetAsEntry ? items[0].webkitGetAsEntry() : null;
-  if (items.length === 1 && firstEntry && firstEntry.isFile) {
-    firstEntry.file(file => {
-      selectedFile.value = file;
-      sendMessage();
-    });
-    return;
+  // Check for single file
+  if (items.length === 1) {
+    if (isEntries) {
+      if (items[0].isFile) {
+        items[0].file(file => {
+          selectedFile.value = file;
+          sendMessage();
+        });
+        return;
+      }
+    } else {
+      // If file object
+      if (!items[0].webkitRelativePath) { // If it has path, it might be part of folder structure intent? But 1 file is 1 file.
+        selectedFile.value = items[0];
+        sendMessage();
+        return;
+      }
+    }
   }
 
-  // Multiple files or directories
   const zip = new JSZip();
   let zipName = getZipName();
 
-  // Use folder name if single directory
-  if (items.length === 1 && firstEntry && firstEntry.isDirectory) {
-    zipName = firstEntry.name + ".zip";
+  // Naming Logic
+  if (isEntries) {
+    if (items.length === 1 && items[0].isDirectory) {
+      zipName = items[0].name + ".zip";
+    }
+  } else {
+    // Files
+    if (items[0].webkitRelativePath) {
+      const parts = items[0].webkitRelativePath.split('/');
+      if (parts.length > 1) {
+        zipName = parts[parts.length - 2] + ".zip";
+      }
+    }
   }
 
   const promises = items.map(item => {
-    const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-    if (entry) {
-      return traverseFileTree(entry, zip);
+    if (isEntries) {
+      if (item.isDirectory) return traverseFileTree(item, zip);
+      // File entry
+      return new Promise(resolve => item.file(f => { zip.file(item.name, f); resolve(); }));
+    } else {
+      const path = item.webkitRelativePath || item.name;
+      zip.file(path, item);
+      return Promise.resolve();
     }
-    // Fallback for non-entry items (unlikely for files)
-    const file = item.getAsFile();
-    if (file) {
-      zip.file(file.name, file);
-    }
-    return Promise.resolve();
   });
 
   await Promise.all(promises);
+
+  if (Object.keys(zip.files).length === 0) return;
 
   isZipping.value = true;
   zipProgress.value = 0;
   currentZipName.value = zipName;
 
-  const content = await zip.generateAsync({ type: "blob", compression: "STORE" }, (metadata) => {
-    zipProgress.value = metadata.percent;
-    currentZipFile.value = metadata.currentFile || '';
-  });
-
-  isZipping.value = false;
-  selectedFile.value = new File([content], zipName, { type: "application/zip" });
-  sendMessage();
-};
-
-const handlePaste = async (e) => {
-  const items = e.clipboardData && e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
-  const fileItems = items.filter(item => item.kind === 'file');
-
-  if (fileItems.length > 0) {
-    e.preventDefault();
-
-    // Check if it's a single file (and not a folder structure that needs zipping)
-    // Note: Paste event items might not always support webkitGetAsEntry correctly in all browsers for folders
-    // But for Chrome/Edge it handles directory structure via getAsEntry
-    const firstEntry = fileItems[0].webkitGetAsEntry ? fileItems[0].webkitGetAsEntry() : null;
-
-    if (fileItems.length === 1 && firstEntry && firstEntry.isFile) {
-      firstEntry.file(file => {
-        selectedFile.value = file;
-        sendMessage();
-      });
-      return;
-    }
-
-    // Multiple files or directories -> Zip
-    const zip = new JSZip();
-    let zipName = getZipName();
-
-    // Use folder name if single directory
-    if (fileItems.length === 1 && firstEntry && firstEntry.isDirectory) {
-      zipName = firstEntry.name + ".zip";
-    }
-
-    const promises = fileItems.map(item => {
-      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-      if (entry) {
-        return traverseFileTree(entry, zip);
-      }
-      const file = item.getAsFile();
-      if (file) {
-        zip.file(file.name, file);
-      }
-      return Promise.resolve();
-    });
-
-    await Promise.all(promises);
-
-    // Check if zip is empty
-    if (Object.keys(zip.files).length === 0) return;
-
-    isZipping.value = true;
-    zipProgress.value = 0;
-    currentZipName.value = zipName;
-
+  try {
     const content = await zip.generateAsync({ type: "blob", compression: "STORE" }, (metadata) => {
       zipProgress.value = metadata.percent;
       currentZipFile.value = metadata.currentFile || '';
     });
-
-    isZipping.value = false;
     selectedFile.value = new File([content], zipName, { type: "application/zip" });
     sendMessage();
+  } catch (err) {
+    console.error("Zip failed", err);
+  } finally {
+    isZipping.value = false;
+  }
+};
+
+const handleFileChange = async (e) => {
+  const files = Array.from(e.target.files);
+  await processAndSendFiles(files, false);
+  e.target.value = '';
+};
+
+const handleDrop = async (e) => {
+  isDragging.value = false;
+  const items = Array.from(e.dataTransfer.items).map(i => i.webkitGetAsEntry()).filter(i => i);
+  await processAndSendFiles(items, true);
+};
+
+const handlePaste = async (e) => {
+  const items = e.clipboardData && e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
+  // For paste, we prefer entries to handle folders
+  const entries = items.filter(i => i.kind === 'file').map(i => i.webkitGetAsEntry()).filter(i => i);
+  if (entries.length > 0) {
+    e.preventDefault();
+    await processAndSendFiles(entries, true);
   }
 };
 

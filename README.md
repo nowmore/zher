@@ -7,8 +7,8 @@ A lightweight, pure LAN application for instant chat and file sharing. No intern
 ## ✨ Features
 
 - **🚀 Pure LAN Experience**: Works entirely within your local network. No external servers, no internet dependency. Just run and connect.
-- **📂 Fast File Transfer**: Drag and drop files to share them instantly with everyone on the network. High-speed transfer limited only by your WiFi/LAN speed.
-- **📋 Seamless Text Copying**: Send text, links, or code snippets across devices. One-click to copy content directly to your system clipboard—perfect for transferring text between phone and computer.
+- **📂 Fast File Transfer**: Drag and drop files to share them instantly with everyone on the network. High-speed transfer limited only by your WiFi/LAN speed. Supports both files and folders.
+- **📋 Rich Text Sharing**: Send text, links, code snippets, and formatted content across devices. What you see is what you get - the formatting stays intact during sharing.
 - **📱 Cross-Platform & Mobile Ready**: Run the server on your PC (Windows/Linux/macOS) and access it from any device (iOS, Android, Tablets) via browser. Responsive design adapts to any screen size.
 
 ![share text](assets/share_text.webp)

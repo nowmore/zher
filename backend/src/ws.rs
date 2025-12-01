@@ -7,7 +7,7 @@ use std::{
     net::SocketAddr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::state::{Session, SharedState, User};
 use crate::utils::{get_device_type, get_random_color};

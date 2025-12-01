@@ -1,27 +1,6 @@
-mod handlers;
-mod state;
-mod utils;
-mod ws;
-
-use axum::{
-    routing::{get, post},
-    Router,
-};
-use local_ip_address::local_ip;
-use socketioxide::SocketIo;
-use std::{
-    env,
-    net::SocketAddr,
-    sync::{Arc, RwLock},
-};
-use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-use tower_http::cors::CorsLayer;
-use tracing::{info, Level};
-
-use crate::handlers::{download_file, static_handler, upload_file};
-use crate::state::AppState;
-use crate::ws::on_connect;
+use std::env;
+use tracing::Level;
+use zher::run_server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,51 +12,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .unwrap_or_else(|| "0.0.0.0".to_string());
     let port = args.get(2).cloned().unwrap_or_else(|| "4836".to_string());
-    let addr_str = format!("{}:{}", host, port);
 
-    // Determine server URL for QR code
-    let my_local_ip = local_ip().unwrap_or("127.0.0.1".parse().unwrap());
-    // If host is 0.0.0.0, use local_ip. If specific IP, use that?
-    // Usually 0.0.0.0 means listen on all. QR code should show LAN IP.
-    let display_host = if host == "0.0.0.0" {
-        my_local_ip.to_string()
-    } else {
-        host.clone()
-    };
-    let server_url = format!("http://{}:{}", display_host, port);
-
-    let mut state_val = AppState::default();
-    state_val.server_url = server_url.clone();
-    let state = Arc::new(RwLock::new(state_val));
-
-    let (layer, io) = SocketIo::builder()
-        .with_state(state.clone())
-        .max_payload(100 * 1024 * 1024) // 100MB
-        .build_layer();
-
-    io.ns("/", on_connect);
-
-    let app = Router::new()
-        .route("/api/upload/:transfer_id", post(upload_file))
-        .route("/api/download/:file_id", get(download_file))
-        .fallback(static_handler)
-        .layer(
-            ServiceBuilder::new()
-                .layer(CorsLayer::permissive())
-                .layer(layer)
-                .layer(axum::Extension(io)),
-        )
-        .with_state(state);
-
-    let listener = TcpListener::bind(&addr_str).await?;
-    info!("Server running on {}", server_url);
-    info!("Listening on {}", addr_str);
-
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
-
-    Ok(())
+    run_server(host, port).await
 }

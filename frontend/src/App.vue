@@ -19,13 +19,67 @@ const isMultiLine = ref(false);
 const isDragging = ref(false);
 const qrCodeUrl = ref('');
 
-// Theme
-const isDarkMode = ref(localStorage.getItem('zher_dark_mode') === 'true');
-if (isDarkMode.value) document.documentElement.classList.add('dark');
-const toggleDarkMode = () => {
-  isDarkMode.value = !isDarkMode.value;
-  if (isDarkMode.value) document.documentElement.classList.add('dark');
+// Theme & Environment
+const isTauri = ref(false);
+
+const checkTauri = () => {
+  try {
+    return !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__ || navigator.userAgent.includes('Tauri'));
+  } catch (e) {
+    return false;
+  }
+};
+
+isTauri.value = checkTauri();
+
+const isDarkMode = ref(false);
+
+// Initialize & Watch Theme
+watch(isTauri, async (tauri) => {
+  if (tauri) {
+    try {
+      //TODO: now we get the android system's darkmode, how can we get tauri app's darkmode not the system's
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      isDarkMode.value = mediaQuery.matches;
+      mediaQuery.addEventListener('change', (e) => {
+        isDarkMode.value = e.matches;
+      });
+    } catch (e) {
+      console.warn('Failed to get Tauri App theme, falling back to system preference', e);
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      isDarkMode.value = mediaQuery.matches;
+    }
+  } else {
+    isDarkMode.value = localStorage.getItem('zher_dark_mode') === 'true';
+  }
+}, { immediate: true });
+
+// Sync theme class
+watch(isDarkMode, (val) => {
+  if (val) document.documentElement.classList.add('dark');
   else document.documentElement.classList.remove('dark');
+}, { immediate: true });
+
+const bgClasses = computed(() => ({
+  root: isTauri.value ? '' : 'bg-gray-100 dark:bg-gray-900',
+  panel: isTauri.value ? '' : 'bg-white dark:bg-gray-800'
+}));
+
+const inputContainerClass = computed(() => {
+  if (isDragging.value) {
+    return 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500/20 border-dashed';
+  }
+  if (isTauri.value) {
+    return isDarkMode.value
+      ? 'bg-gray-800 border-gray-700 shadow-sm' // Tauri Dark
+      : 'bg-white border-gray-200 shadow-sm';    // Tauri Light
+  }
+  return 'bg-gray-100 dark:bg-gray-700 border-transparent'; // Web
+});
+
+const toggleDarkMode = () => {
+  if (isTauri.value) return;
+  isDarkMode.value = !isDarkMode.value;
   localStorage.setItem('zher_dark_mode', isDarkMode.value);
 };
 
@@ -97,6 +151,8 @@ watch(serverUrl, generateQRCode);
 
 // Lifecycle
 onMounted(() => {
+  if (!isTauri.value) isTauri.value = checkTauri(); // Re-check Tauri on mount
+
   loadChatHistory();
 
   connect({
@@ -190,8 +246,8 @@ const copyText = (text, msgId) => {
 </script>
 
 <template>
-  <div
-    class="flex h-[100dvh] bg-gray-100 dark:bg-gray-900 font-sans overflow-hidden relative text-gray-800 dark:text-gray-100">
+  <div class="flex h-[100dvh] font-sans overflow-hidden relative text-gray-800 dark:text-gray-100"
+    :class="bgClasses.root">
 
     <div v-if="isZipping" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
@@ -292,13 +348,13 @@ const copyText = (text, msgId) => {
     </div>
 
     <div class="flex-1 flex flex-col min-w-0 h-full">
-      <header
-        class="bg-white dark:bg-gray-800 shadow-sm px-4 py-3 flex justify-between items-center z-10 shrink-0 transition-colors">
+      <header class="shadow-sm px-4 py-3 flex justify-between items-center z-10 shrink-0 transition-colors"
+        :class="bgClasses.panel">
         <h1 class="text-lg font-bold text-gray-800 dark:text-white">这儿 <span
             class="text-sm font-normal text-gray-400 ml-2">zhe'r</span>
         </h1>
         <div class="flex items-center gap-3">
-          <button @click="toggleDarkMode"
+          <button v-if="!isTauri" @click="toggleDarkMode"
             class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors">
             <svg v-if="isDarkMode" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
               stroke="currentColor">
@@ -407,13 +463,13 @@ const copyText = (text, msgId) => {
         </div>
       </div>
 
-      <div
-        class="p-3 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shrink-0 pb-safe transition-colors">
+      <div class="p-3 border-t border-gray-200 dark:border-gray-700 shrink-0 pb-safe transition-colors"
+        :class="bgClasses.panel">
         <div class="flex gap-2 items-end">
           <div
-            class="relative flex-1 bg-gray-100 dark:bg-gray-700 rounded-2xl focus-within:bg-white dark:focus-within:bg-gray-600 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all border focus-within:border-blue-500 dark:focus-within:border-blue-500"
-            :class="isDragging ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500/20 border-dashed' : 'border-transparent'"
-            @drop.prevent="handleDrop" @dragover.prevent="isDragging = true" @dragleave.prevent="isDragging = false">
+            class="relative flex-1 rounded-2xl focus-within:bg-white dark:focus-within:bg-gray-600 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all border focus-within:border-blue-500 dark:focus-within:border-blue-500"
+            :class="inputContainerClass" @drop.prevent="handleDrop" @dragover.prevent="isDragging = true"
+            @dragleave.prevent="isDragging = false">
             <textarea v-model="inputText" rows="1" @input="autoResize" @keyup.enter="sendMessage" @paste="handlePaste"
               type="text" :placeholder="placeholderText"
               class="w-full pl-4 pr-20 py-3 bg-transparent border-none focus:ring-0 outline-none text-sm text-gray-800 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 resize-none block max-h-[120px] overflow-y-auto"
@@ -440,8 +496,8 @@ const copyText = (text, msgId) => {
       </div>
     </div>
 
-    <div
-      class="hidden md:flex w-80 bg-white dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 flex-col shrink-0 transition-colors">
+    <div class="hidden md:flex w-80 border-l border-gray-200 dark:border-gray-700 flex-col shrink-0 transition-colors"
+      :class="bgClasses.panel">
       <div class="p-6 border-b border-gray-100 dark:border-gray-700">
         <h2 class="text-lg font-bold text-gray-800 dark:text-white">在线用户 ({{ onlineCount }})</h2>
       </div>

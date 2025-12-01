@@ -130,6 +130,23 @@ export function useFileTransfer(sendMessage) {
     };
 
     const downloadFile = (fileId, fileName) => {
+        let isTauri = false;
+        try {
+            isTauri = !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__ || navigator.userAgent.includes('Tauri'));
+        } catch { }
+        console.log("isTauri: ", isTauri);
+        if (isTauri) {
+            const url = new URL(`/api/download/${fileId}`, window.location.origin).toString();
+            const invoke = window.__TAURI__?.core?.invoke || window.__TAURI__?.invoke;
+            console.log("invoke: ", invoke);
+            if (invoke) {
+                console.log("invoke download cmd:", url);
+                invoke('download_file', { url, fileName })
+                    .catch(err => console.error('Tauri download failed', err));
+                return;
+            }
+        }
+
         const link = document.createElement('a');
         link.href = `/api/download/${fileId}`;
         link.download = fileName;

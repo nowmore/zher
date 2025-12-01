@@ -18,12 +18,6 @@ BACKEND_DIR="backend"
 BUILD_DIR="build"
 RELEASE_DIR="release"
 
-echo "Building Frontend..."
-cd "$FRONTEND_DIR"
-npm install
-npm run build
-cd ..
-
 echo "Building Backend..."
 mkdir -p "$BUILD_DIR"
 ABS_BUILD_DIR="$(pwd)/$BUILD_DIR"

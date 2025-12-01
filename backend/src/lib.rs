@@ -1,3 +1,4 @@
+pub mod discovery;
 pub mod handlers;
 pub mod state;
 pub mod utils;
@@ -18,6 +19,7 @@ use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
+use crate::discovery::start_discovery_responder;
 use crate::handlers::{download_file, static_handler, upload_file};
 use crate::state::AppState;
 use crate::ws::on_connect;
@@ -61,6 +63,9 @@ pub async fn run_server(host: String, port: String) -> Result<(), Box<dyn std::e
     let listener = TcpListener::bind(&addr_str).await?;
     info!("Server running on {}", server_url);
     info!("Listening on {}", addr_str);
+
+    start_discovery_responder();
+    info!("Discovery responder started");
 
     axum::serve(
         listener,

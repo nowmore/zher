@@ -183,15 +183,57 @@ pub async fn static_handler(uri: Uri) -> impl IntoResponse {
     match Assets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            
+            if path == "index.html" || path.is_empty() {
+                let html = String::from_utf8_lossy(&content.data);
+                let injected_html = inject_tauri_mock(&html);
+                ([(header::CONTENT_TYPE, mime.as_ref())], injected_html).into_response()
+            } else {
+                ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            }
         }
         None => {
             if let Some(content) = Assets::get("index.html") {
                 let mime = mime_guess::from_path("index.html").first_or_octet_stream();
-                ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+                let html = String::from_utf8_lossy(&content.data);
+                let injected_html = inject_tauri_mock(&html);
+                ([(header::CONTENT_TYPE, mime.as_ref())], injected_html).into_response()
             } else {
                 StatusCode::NOT_FOUND.into_response()
             }
         }
+    }
+}
+
+fn inject_tauri_mock(html: &str) -> String {
+    let tauri_mock_script = r#"<script>
+(function() {
+    if (window.parent !== window) {
+        window.__TAURI__ = window.__TAURI__ || {};
+        window.__TAURI__.core = window.__TAURI__.core || {};
+        window.__TAURI__.core.invoke = async (cmd, args) => {
+            console.log('[Tauri Mock] invoke:', cmd, args);
+            if (cmd === 'download_file') {
+                window.parent.postMessage({ 
+                    type: 'download_request', 
+                    url: args.url, 
+                    fileName: args.fileName
+                }, '*');
+                return Promise.resolve();
+            }
+            return Promise.reject('Command not implemented: ' + cmd);
+        };
+        window.__TAURI__.invoke = window.__TAURI__.core.invoke;
+        window.__TAURI_INTERNALS__ = { postMessage: () => {} };
+        console.log('[Tauri Mock] Injected via server');
+    }
+})();
+</script>"#;
+    
+    if let Some(head_pos) = html.find("<head>") {
+        let insert_pos = head_pos + "<head>".len();
+        format!("{}{}{}", &html[..insert_pos], tauri_mock_script, &html[insert_pos..])
+    } else {
+        html.to_string()
     }
 }

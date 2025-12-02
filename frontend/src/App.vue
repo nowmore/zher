@@ -19,40 +19,7 @@ const isMultiLine = ref(false);
 const isDragging = ref(false);
 const qrCodeUrl = ref('');
 
-// Theme & Environment
-const isTauri = ref(false);
-
-const checkTauri = () => {
-  try {
-    return !!(window.__TAURI__ || window.__TAURI_INTERNALS__ || window.__TAURI_IPC__ || navigator.userAgent.includes('Tauri'));
-  } catch (e) {
-    return false;
-  }
-};
-
-isTauri.value = checkTauri();
-
-const isDarkMode = ref(false);
-
-// Initialize & Watch Theme
-watch(isTauri, async (tauri) => {
-  if (tauri) {
-    try {
-      //TODO: now we get the android system's darkmode, how can we get tauri app's darkmode not the system's
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-      isDarkMode.value = mediaQuery.matches;
-      mediaQuery.addEventListener('change', (e) => {
-        isDarkMode.value = e.matches;
-      });
-    } catch (e) {
-      console.warn('Failed to get Tauri App theme, falling back to system preference', e);
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-      isDarkMode.value = mediaQuery.matches;
-    }
-  } else {
-    isDarkMode.value = localStorage.getItem('zher_dark_mode') === 'true';
-  }
-}, { immediate: true });
+const isDarkMode = ref(localStorage.getItem('zher_dark_mode') === 'true');
 
 // Sync theme class
 watch(isDarkMode, (val) => {
@@ -61,24 +28,18 @@ watch(isDarkMode, (val) => {
 }, { immediate: true });
 
 const bgClasses = computed(() => ({
-  root: isTauri.value ? '' : 'bg-gray-100 dark:bg-gray-900',
-  panel: isTauri.value ? '' : 'bg-white dark:bg-gray-800'
+  root: 'bg-gray-100 dark:bg-gray-900',
+  panel: 'bg-white dark:bg-gray-800'
 }));
 
 const inputContainerClass = computed(() => {
   if (isDragging.value) {
     return 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500/20 border-dashed';
   }
-  if (isTauri.value) {
-    return isDarkMode.value
-      ? 'bg-gray-800 border-gray-700 shadow-sm' // Tauri Dark
-      : 'bg-white border-gray-200 shadow-sm';    // Tauri Light
-  }
-  return 'bg-gray-100 dark:bg-gray-700 border-transparent'; // Web
+  return 'bg-gray-100 dark:bg-gray-700 border-transparent';
 });
 
 const toggleDarkMode = () => {
-  if (isTauri.value) return;
   isDarkMode.value = !isDarkMode.value;
   localStorage.setItem('zher_dark_mode', isDarkMode.value);
 };
@@ -151,8 +112,6 @@ watch(serverUrl, generateQRCode);
 
 // Lifecycle
 onMounted(() => {
-  if (!isTauri.value) isTauri.value = checkTauri(); // Re-check Tauri on mount
-
   loadChatHistory();
 
   connect({
@@ -205,6 +164,11 @@ const saveName = () => {
 
 const triggerFileSelect = () => {
   fileInput.value.click();
+};
+
+const onDrop = (e) => {
+  isDragging.value = false;
+  handleDrop(e);
 };
 
 const autoResize = (e) => {
@@ -354,7 +318,7 @@ const copyText = (text, msgId) => {
             class="text-sm font-normal text-gray-400 ml-2">zhe'r</span>
         </h1>
         <div class="flex items-center gap-3">
-          <button v-if="!isTauri" @click="toggleDarkMode"
+          <button @click="toggleDarkMode"
             class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors">
             <svg v-if="isDarkMode" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
               stroke="currentColor">
@@ -468,7 +432,7 @@ const copyText = (text, msgId) => {
         <div class="flex gap-2 items-end">
           <div
             class="relative flex-1 rounded-2xl focus-within:bg-white dark:focus-within:bg-gray-600 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all border focus-within:border-blue-500 dark:focus-within:border-blue-500"
-            :class="inputContainerClass" @drop.prevent="handleDrop" @dragover.prevent="isDragging = true"
+            :class="inputContainerClass" @drop.prevent="onDrop" @dragover.prevent="isDragging = true"
             @dragleave.prevent="isDragging = false">
             <textarea v-model="inputText" rows="1" @input="autoResize" @keyup.enter="sendMessage" @paste="handlePaste"
               type="text" :placeholder="placeholderText"

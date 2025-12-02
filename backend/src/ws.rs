@@ -121,6 +121,7 @@ pub async fn on_connect(
         let all_users: Vec<User> = state_write
             .sessions
             .values()
+            .filter(|s| s.disconnect_time.is_none())
             .map(|s| s.user.clone())
             .collect();
 
@@ -196,6 +197,7 @@ pub async fn on_connect(
                     let all_users: Vec<User> = state_write
                         .sessions
                         .values()
+                        .filter(|s| s.disconnect_time.is_none())
                         .map(|s| s.user.clone())
                         .collect();
                     let _ = socket

@@ -16,7 +16,7 @@ use tracing::warn;
 use crate::state::SharedState;
 
 #[derive(RustEmbed)]
-#[folder = "../frontend/dist"]
+#[folder = "$CARGO_MANIFEST_DIR/../frontend/dist"]
 struct Assets;
 
 // POST /upload/:transfer_id

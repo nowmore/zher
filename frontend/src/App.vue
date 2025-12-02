@@ -434,8 +434,8 @@ const copyText = (text, msgId) => {
             class="relative flex-1 rounded-2xl focus-within:bg-white dark:focus-within:bg-gray-600 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all border focus-within:border-blue-500 dark:focus-within:border-blue-500"
             :class="inputContainerClass" @drop.prevent="onDrop" @dragover.prevent="isDragging = true"
             @dragleave.prevent="isDragging = false">
-            <textarea v-model="inputText" rows="1" @input="autoResize" @keyup.enter="sendMessage" @paste="handlePaste"
-              type="text" :placeholder="placeholderText"
+            <textarea v-model="inputText" rows="1" @input="autoResize" @keydown.enter.prevent.exact="sendMessage"
+              @paste="handlePaste" type="text" :placeholder="placeholderText"
               class="w-full pl-4 pr-20 py-3 bg-transparent border-none focus:ring-0 outline-none text-sm text-gray-800 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 resize-none block max-h-[120px] overflow-y-auto"
               style="min-height: 44px;"></textarea>
             <button @click="triggerFileSelect" v-if="!isMultiLine"

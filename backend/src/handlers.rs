@@ -104,7 +104,6 @@ pub async fn download_file(
             }
         }
 
-        // Ensure bounds
         if start_byte > end_byte || start_byte >= filesize {
             return (StatusCode::RANGE_NOT_SATISFIABLE, "Invalid Range").into_response();
         }
@@ -176,8 +175,38 @@ pub async fn download_file(
     }
 }
 
-pub async fn static_handler(uri: Uri) -> impl IntoResponse {
+pub async fn static_handler(uri: Uri, State(state): State<SharedState>) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
+    let query = uri.query().unwrap_or("");
+
+    // Check if room code is required for accessing the main page
+    if path.is_empty() || path == "index.html" {
+        let state_read = state.read().unwrap();
+        if state_read.room_code_enabled {
+            if let Some(ref expected_code) = state_read.room_code {
+                // Parse query string to get room code
+                let code_param = query.split('&').find_map(|param| {
+                    let parts: Vec<&str> = param.split('=').collect();
+                    if parts.len() == 2 && parts[0] == "code" {
+                        Some(parts[1].to_string())
+                    } else {
+                        None
+                    }
+                });
+
+                match code_param {
+                    Some(provided_code) if &provided_code == expected_code => {
+                        // Valid room code, allow access
+                    }
+                    _ => {
+                        // Invalid or missing room code - return 404
+                        return StatusCode::NOT_FOUND.into_response();
+                    }
+                }
+            }
+        }
+    }
+
     let path = if path.is_empty() { "index.html" } else { path };
 
     match Assets::get(path) {
@@ -194,4 +223,115 @@ pub async fn static_handler(uri: Uri) -> impl IntoResponse {
             }
         }
     }
+}
+
+// POST /api/discovery
+use axum::Json;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+pub struct DiscoveryToggle {
+    pub enabled: bool,
+}
+
+pub async fn toggle_discovery(
+    State(state): State<SharedState>,
+    Json(payload): Json<DiscoveryToggle>,
+) -> impl IntoResponse {
+    let state_read = state.read().unwrap();
+    state_read.discovery.set_enabled(payload.enabled);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "enabled": payload.enabled
+        })),
+    )
+}
+
+// GET /api/roomcode
+pub async fn get_roomcode(State(state): State<SharedState>) -> impl IntoResponse {
+    let state_read = state.read().unwrap();
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "enabled": state_read.room_code_enabled,
+            "code": state_read.room_code
+        })),
+    )
+}
+
+// POST /api/roomcode/toggle
+#[derive(Deserialize)]
+pub struct RoomCodeToggle {
+    pub enabled: bool,
+}
+
+pub async fn toggle_roomcode(
+    axum::Extension(io): axum::Extension<SocketIo>,
+    State(state): State<SharedState>,
+    Json(payload): Json<RoomCodeToggle>,
+) -> impl IntoResponse {
+    {
+        let mut state_write = state.write().unwrap();
+        state_write.room_code_enabled = payload.enabled;
+    }
+
+    // Emit event to all clients to notify room code status changed
+    let _ = io.emit(
+        "roomcode-status-changed",
+        serde_json::json!({
+            "enabled": payload.enabled
+        }),
+    );
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "enabled": payload.enabled
+        })),
+    )
+}
+
+// POST /api/roomcode
+#[derive(Deserialize)]
+pub struct RoomCodeUpdate {
+    pub code: String,
+}
+
+pub async fn update_roomcode(
+    axum::Extension(io): axum::Extension<SocketIo>,
+    State(state): State<SharedState>,
+    Json(payload): Json<RoomCodeUpdate>,
+) -> impl IntoResponse {
+    if payload.code.len() != 6 || !payload.code.chars().all(|c| c.is_ascii_digit()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Room code must be exactly 6 digits"
+            })),
+        )
+            .into_response();
+    }
+
+    {
+        let mut state_write = state.write().unwrap();
+        state_write.room_code = Some(payload.code.clone());
+    }
+
+    let _ = io.emit(
+        "roomcode-changed",
+        serde_json::json!({
+            "code": payload.code
+        }),
+    );
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "code": payload.code
+        })),
+    )
+        .into_response()
 }

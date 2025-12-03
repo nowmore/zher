@@ -4,6 +4,9 @@ pub mod state;
 pub mod utils;
 pub mod ws;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod desktop;
+
 use axum::{
     routing::{get, post},
     Router,
@@ -17,10 +20,11 @@ use std::{
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use tracing::info;
 
-use crate::discovery::start_discovery_responder;
-use crate::handlers::{download_file, static_handler, upload_file};
+use crate::handlers::{
+    download_file, get_roomcode, static_handler, toggle_discovery, toggle_roomcode,
+    update_roomcode, upload_file,
+};
 use crate::state::AppState;
 use crate::ws::on_connect;
 
@@ -29,7 +33,7 @@ pub async fn run_server(host: String, port: String) -> Result<(), Box<dyn std::e
 
     // Determine server URL for QR code
     let my_local_ip = local_ip().unwrap_or("127.0.0.1".parse().unwrap());
-    
+
     let display_host = if host == "0.0.0.0" {
         my_local_ip.to_string()
     } else {
@@ -51,6 +55,9 @@ pub async fn run_server(host: String, port: String) -> Result<(), Box<dyn std::e
     let app = Router::new()
         .route("/api/upload/:transfer_id", post(upload_file))
         .route("/api/download/:file_id", get(download_file))
+        .route("/api/discovery", post(toggle_discovery))
+        .route("/api/roomcode", get(get_roomcode).post(update_roomcode))
+        .route("/api/roomcode/toggle", post(toggle_roomcode))
         .fallback(static_handler)
         .layer(
             ServiceBuilder::new()
@@ -58,14 +65,15 @@ pub async fn run_server(host: String, port: String) -> Result<(), Box<dyn std::e
                 .layer(layer)
                 .layer(axum::Extension(io)),
         )
-        .with_state(state);
+        .with_state(state.clone());
 
     let listener = TcpListener::bind(&addr_str).await?;
-    info!("Server running on {}", server_url);
-    info!("Listening on {}", addr_str);
 
-    start_discovery_responder();
-    info!("Discovery responder started");
+    // Start discovery service
+    {
+        let state_read = state.read().unwrap();
+        state_read.discovery.start();
+    }
 
     axum::serve(
         listener,

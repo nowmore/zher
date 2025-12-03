@@ -18,11 +18,18 @@ export function useSocket() {
         return id;
     };
 
-    const connect = ({ onMessage, onWelcome, onStartUpload }) => {
+    const connect = ({ onMessage, onWelcome, onStartUpload, roomCode }) => {
+        const auth = {
+            sessionId: getSessionId()
+        };
+        
+        // Add room code if provided
+        if (roomCode) {
+            auth.roomCode = roomCode;
+        }
+        
         socket.value = io({
-            auth: {
-                sessionId: getSessionId()
-            },
+            auth,
             transports: ['websocket']
         });
 
@@ -71,6 +78,20 @@ export function useSocket() {
 
         socket.value.on('name-change-fail', (msg) => {
             alert(msg);
+        });
+
+        socket.value.on('connect_error', (error) => {
+            console.error('Connection error:', error.message);
+            if (error.message.includes('Invalid room code') || error.message.includes('Room code required')) {
+                alert('连接失败: ' + error.message);
+            }
+        });
+
+        socket.value.on('disconnect', (reason) => {
+            if (reason === 'io server disconnect') {
+                // Server forcefully disconnected (e.g., room code mismatch)
+                console.log('Server disconnected the connection');
+            }
         });
     };
 

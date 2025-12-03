@@ -2,7 +2,7 @@ import { ref } from 'vue';
 import JSZip from 'jszip';
 import { getZipName, traverseFileTree } from '../utils/fileUtils';
 
-export function useFileTransfer(sendMessage) {
+export function useFileTransfer(onFileReady) {
     const selectedFile = ref(null);
     const isZipping = ref(false);
     const zipProgress = ref(0);
@@ -43,7 +43,7 @@ export function useFileTransfer(sendMessage) {
                 if (items[0].isFile) {
                     items[0].file(file => {
                         selectedFile.value = file;
-                        sendMessage();
+                        if (onFileReady) onFileReady();
                     });
                     return;
                 }
@@ -51,7 +51,7 @@ export function useFileTransfer(sendMessage) {
                 // If file object
                 if (!items[0].webkitRelativePath) {
                     selectedFile.value = items[0];
-                    sendMessage();
+                    if (onFileReady) onFileReady();
                     return;
                 }
             }
@@ -101,7 +101,7 @@ export function useFileTransfer(sendMessage) {
                 currentZipFile.value = metadata.currentFile || '';
             });
             selectedFile.value = new File([content], zipName, { type: "application/zip" });
-            sendMessage();
+            if (onFileReady) onFileReady();
         } catch (err) {
             console.error("Zip failed", err);
         } finally {

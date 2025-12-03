@@ -16,6 +16,8 @@ use crate::utils::{get_device_type, get_random_color};
 pub struct Auth {
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
+    #[serde(rename = "roomCode")]
+    pub room_code: Option<String>,
 }
 
 pub async fn on_connect(
@@ -23,6 +25,37 @@ pub async fn on_connect(
     Data(auth): Data<Auth>,
     state: SocketState<SharedState>,
 ) {
+    // Validate room code if enabled
+    {
+        let state_read = state.read().unwrap();
+        if state_read.room_code_enabled {
+            if let Some(ref expected_code) = state_read.room_code {
+                match &auth.room_code {
+                    Some(provided_code) if provided_code == expected_code => {
+                        // Valid room code
+                    }
+                    Some(_) => {
+                        // Invalid room code
+                        let socket_id = socket.id.to_string();
+                        let _ = socket.disconnect();
+                        info!("Connection rejected: Invalid room code from {}", socket_id);
+                        return;
+                    }
+                    None => {
+                        // Room code required but not provided
+                        let socket_id = socket.id.to_string();
+                        let _ = socket.disconnect();
+                        info!(
+                            "Connection rejected: Room code required but not provided from {}",
+                            socket_id
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     // Get IP from Axum ConnectInfo
     let ip: String = socket
         .req_parts()
@@ -117,6 +150,11 @@ pub async fn on_connect(
             .socket_to_session
             .insert(socket.id.to_string(), session_key.clone());
 
+        // Store the room code used for this socket connection
+        state_write
+            .socket_room_codes
+            .insert(socket.id.to_string(), auth.room_code.clone());
+
         // Collect all users to send welcome
         let all_users: Vec<User> = state_write
             .sessions
@@ -143,13 +181,6 @@ pub async fn on_connect(
             },
         );
 
-        // Only broadcast user-joined if this is a truly new user (session created or re-activated from offline state)
-        // However, if session existed but had 0 sockets, we effectively re-joined.
-        // But wait, if we don't remove them from list on disconnect (only mark offline), we don't need to emit joined?
-        // If we remove them from list on disconnect, then we must emit joined.
-        // Decision: Remove from list on disconnect (visually offline). So re-appearing means joined.
-        // Check: if session was newly created OR (it existed but active_sockets was empty before this insertion).
-        // We can check active_sockets.len() == 1.
         if state_write
             .sessions
             .get(&session_key)
@@ -342,6 +373,9 @@ pub async fn on_connect(
             state_write
                 .file_owners
                 .retain(|_, v| v.0 != socket.id.to_string());
+
+            // Remove room code tracking for this socket
+            state_write.socket_room_codes.remove(&socket.id.to_string());
         },
     );
 }

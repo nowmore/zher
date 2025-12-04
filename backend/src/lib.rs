@@ -4,6 +4,9 @@ pub mod state;
 pub mod utils;
 pub mod ws;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod desktop;
 

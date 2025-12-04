@@ -165,6 +165,46 @@ const toggleDiscovery = async () => {
 const toggleRoomCode = async () => {
   const newValue = !roomCodeEnabled.value;
   try {
+    // If enabling room code, ensure we have a valid code set on backend first
+    if (newValue) {
+      const localCode = localStorage.getItem('zher_room_code') || '';
+      
+      // Check if local code is valid (6 digits)
+      if (localCode.length === 6 && /^\d{6}$/.test(localCode)) {
+        // Set the room code on backend first
+        const codeResponse = await fetch('/api/roomcode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: localCode })
+        });
+        
+        if (!codeResponse.ok) {
+          alert('Failed to set room code');
+          return;
+        }
+        
+        roomCode.value = localCode;
+      } else {
+        // Generate a random 6-digit code if no valid code exists
+        const randomCode = String(Math.floor(Math.random() * 1000000)).padStart(6, '0');
+        
+        const codeResponse = await fetch('/api/roomcode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: randomCode })
+        });
+        
+        if (!codeResponse.ok) {
+          alert('Failed to set room code');
+          return;
+        }
+        
+        roomCode.value = randomCode;
+        localStorage.setItem('zher_room_code', randomCode);
+      }
+    }
+    
+    // Now toggle the room code enabled status
     const response = await fetch('/api/roomcode/toggle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -124,7 +124,7 @@ pub async fn on_connect(
                 .headers
                 .get("user-agent")
                 .and_then(|h| h.to_str().ok());
-            let device = get_device_type(ua);
+            let device = get_device_type(ua.unwrap_or(""));
 
             user_profile = User {
                 id: uuid::Uuid::new_v4().to_string(), // Stable ID

@@ -31,7 +31,23 @@ use crate::handlers::{
 use crate::state::AppState;
 use crate::ws::on_connect;
 
+pub async fn run_server_with_shutdown(
+    host: String,
+    port: String,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_server_internal(host, port, Some(shutdown_rx)).await
+}
+
 pub async fn run_server(host: String, port: String) -> Result<(), Box<dyn std::error::Error>> {
+    run_server_internal(host, port, None).await
+}
+
+async fn run_server_internal(
+    host: String,
+    port: String,
+    shutdown_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let addr_str = format!("{}:{}", host, port);
 
     // Determine server URL for QR code
@@ -75,14 +91,37 @@ pub async fn run_server(host: String, port: String) -> Result<(), Box<dyn std::e
     // Start discovery service
     {
         let state_read = state.read().unwrap();
-        state_read.discovery.start();
+        let mut discovery = state_read.discovery.lock().unwrap();
+        discovery.start();
     }
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
+    // Clone state for cleanup
+    let cleanup_state = state.clone();
+
+    // Run server with optional graceful shutdown
+    if let Some(shutdown_rx) = shutdown_rx {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        })
+        .await?;
+    } else {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
+    }
+
+    // Stop discovery service when server stops
+    {
+        let state_read = cleanup_state.read().unwrap();
+        let mut discovery = state_read.discovery.lock().unwrap();
+        discovery.stop();
+    }
 
     Ok(())
 }

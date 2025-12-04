@@ -41,6 +41,47 @@ build.bat
 2. Open your browser and go to `http://localhost:4836`.
 3. Share the URL (e.g., `http://192.168.1.x:4836`) with other devices on the same WiFi/LAN.
 
+## 🧪 Testing
+
+The project includes comprehensive test suites for both frontend and backend.
+
+### Quick Test
+
+**Windows:**
+```bat
+run-tests.bat
+```
+
+**Linux/macOS:**
+```bash
+./run-tests.sh
+```
+
+### Individual Tests
+
+**Frontend:**
+```bash
+cd frontend
+npm test              # Watch mode
+npm run test:run      # Single run
+npm run test:coverage # With coverage
+```
+
+**Backend:**
+```bash
+cd backend
+cargo test            # All tests
+cargo test --lib      # Unit tests only
+```
+
+See [TESTING.md](./TESTING.md) for detailed testing documentation.
+
+### Test Coverage
+
+- ✅ Frontend: 46+ tests (Components, Composables, Utils, E2E)
+- ✅ Backend: 27 tests (State, Utils, Integration, Discovery)
+- ✅ CI/CD: Automated testing via GitHub Actions
+
 ## License
 
 MIT

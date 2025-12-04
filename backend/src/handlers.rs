@@ -239,7 +239,8 @@ pub async fn toggle_discovery(
     Json(payload): Json<DiscoveryToggle>,
 ) -> impl IntoResponse {
     let state_read = state.read().unwrap();
-    state_read.discovery.set_enabled(payload.enabled);
+    let discovery = state_read.discovery.lock().unwrap();
+    discovery.set_enabled(payload.enabled);
 
     (
         StatusCode::OK,

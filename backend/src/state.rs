@@ -2,7 +2,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::SystemTime,
 };
 use tokio::sync::mpsc;
@@ -38,7 +38,7 @@ pub struct AppState {
     pub transfers: HashMap<String, mpsc::Sender<Result<Bytes, std::io::Error>>>,
 
     pub server_url: String,
-    pub discovery: Arc<DiscoveryService>,
+    pub discovery: Arc<Mutex<DiscoveryService>>,
     
     // Room code settings
     pub room_code_enabled: bool,
@@ -54,7 +54,7 @@ impl Default for AppState {
             file_owners: HashMap::new(),
             transfers: HashMap::new(),
             server_url: String::new(),
-            discovery: Arc::new(DiscoveryService::new(true)),
+            discovery: Arc::new(Mutex::new(DiscoveryService::new(true))),
             room_code_enabled: false,
             room_code: None,
         }

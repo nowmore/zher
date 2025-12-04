@@ -21,10 +21,19 @@ fn main() {
         }
     }
 
-    if cfg!(target_os = "windows") {
-        let mut res = winres::WindowsResource::new();
-        res.set_icon("icons/icon.ico");
-        res.compile().unwrap();
+    // Only set Windows icon for desktop builds, not for library builds
+    #[cfg(all(target_os = "windows", not(target_os = "android"), not(target_os = "ios")))]
+    {
+        let icon_path = "icons/icon.ico";
+        if std::path::Path::new(icon_path).exists() {
+            let mut res = winres::WindowsResource::new();
+            res.set_icon(icon_path);
+            if let Err(e) = res.compile() {
+                println!("cargo:warning=Failed to compile Windows resource: {}", e);
+            }
+        } else {
+            println!("cargo:warning=Icon file not found: {}", icon_path);
+        }
     }
 }
 
